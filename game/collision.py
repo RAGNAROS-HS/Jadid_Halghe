@@ -71,33 +71,32 @@ def resolve_food_eating(
     10 000 TPS; add a spatial grid if counts grow significantly larger.
     """
     cell_idx = cells.alive_indices()
-    food_idx = food.alive_indices()
+    n_food = food.count                         # O(1) — compact array
     food_gains = np.zeros(config.max_players, dtype=np.float32)
 
-    if len(cell_idx) == 0 or len(food_idx) == 0:
+    if len(cell_idx) == 0 or n_food == 0:
         return food_gains
 
-    cell_pos = cells.pos[cell_idx]          # (nc, 2)
-    cell_rad = np.sqrt(cells.mass[cell_idx])  # (nc,)  radius = sqrt(mass)
-    food_pos = food.pos[food_idx]           # (nf, 2)
+    cell_pos = cells.pos[cell_idx]              # (nc, 2)
+    cell_mass = cells.mass[cell_idx]            # (nc,) float32
+    food_pos = food.pos[:n_food]               # (nf, 2) — direct view, no copy or scan
 
-    dist_sq = _pairwise_dist_sq(cell_pos, food_pos)   # (nc, nf)
-    rad_sq = (cell_rad ** 2)[:, None]                  # (nc, 1)
+    dist_sq = _pairwise_dist_sq(cell_pos, food_pos)   # (nc, nf) float32
+    # cell i eats food j when dist_sq[i,j] < mass[i]  (since radius = sqrt(mass))
+    eats = dist_sq < cell_mass[:, None]        # (nc, nf) bool — avoids sqrt + square
 
-    # cell i eats food j when dist_sq[i,j] < cell_rad[i]^2
-    eats = dist_sq < rad_sq   # (nc, nf) bool
-
-    # For each food pellet, pick the first (lowest-index) eater.
-    # Multiple cells can overlap the same food; we give it to the first.
-    # np.argmax on bool array finds first True along axis 0.
-    any_eater = eats.any(axis=0)                      # (nf,)
-    eaten_local = np.where(any_eater)[0]              # local food indices
+    any_eater = eats.any(axis=0)               # (nf,) — which food was eaten?
+    eaten_local = np.where(any_eater)[0]       # local food indices (= global for compact)
     if len(eaten_local) == 0:
         return food_gains
 
-    eater_local = np.argmax(eats[:, eaten_local], axis=0)  # (n_eaten,)
+    # For each eaten pellet pick the eater with the most mass (largest cell wins ties)
+    mass_if_eater = np.where(
+        eats[:, eaten_local], cell_mass[:, None], np.float32(0.0)
+    )                                          # (nc, n_eaten)
+    eater_local = np.argmax(mass_if_eater, axis=0)  # (n_eaten,)
 
-    eaten_global = food_idx[eaten_local]
+    eaten_global = eaten_local                 # compact: local index == global index
     eater_global = cell_idx[eater_local]
 
     # Award mass
@@ -368,10 +367,14 @@ def resolve_merging(
         if len(idx) < 2:
             return
 
+        timer = cells.merge_timer[idx]  # (n,)
+        # Fast exit: no cell is ready to merge — saves expensive pairwise distance computation
+        if not (timer == 0).any():
+            return
+
         pos = cells.pos[idx]          # (n, 2)
         mass = cells.mass[idx]        # (n,)
         owner = cells.owner[idx]      # (n,)
-        timer = cells.merge_timer[idx]  # (n,)
         radius = np.sqrt(mass)         # (n,)
 
         # Same owner, both ready

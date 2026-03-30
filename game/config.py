@@ -94,7 +94,7 @@ class WorldConfig:
     start_mass: float = 2_500.0   # → radius ≈ 50 units
     food_mass: float = 25.0       # → radius  = 5 units
     virus_mass: float = 2_500.0   # → radius ≈ 50 units
-    min_split_mass: float = 5_000.0
+    min_split_mass: float = 2_500.0
     max_cells_per_player: int = 16
     merge_time_base: float = 375.0        # ticks (= 15 s at 25 TPS)
     merge_time_mass_factor: float = 50.0  # adds mass/50 ticks to merge time
@@ -102,9 +102,9 @@ class WorldConfig:
     mass_decay_threshold: float = 10_000.0
 
     # ── Physics ────────────────────────────────────────────────────────────
-    base_speed: float = 315.0
+    base_speed: float = 20000.0
     speed_exp: float = 0.439
-    split_speed: float = 800.0
+    split_speed: float = 3000.0
     split_decay: float = 0.9   # per tick; after 25 ticks ≈ 7 % remains
 
     # ── Eating ─────────────────────────────────────────────────────────────

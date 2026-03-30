@@ -31,12 +31,14 @@ def spawn_food(
     if deficit <= 0:
         return
 
+    # allocate() returns contiguous indices [old_count, old_count + n)
     indices = food.allocate(deficit)
-    if len(indices) == 0:
+    n = len(indices)
+    if n == 0:
         return
 
-    food.pos[indices, 0] = rng.uniform(0.0, config.width, len(indices)).astype(np.float32)
-    food.pos[indices, 1] = rng.uniform(0.0, config.height, len(indices)).astype(np.float32)
+    food.pos[indices, 0] = rng.uniform(0.0, config.width,  n).astype(np.float32)
+    food.pos[indices, 1] = rng.uniform(0.0, config.height, n).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +183,8 @@ def handle_split(
     # Launch direction: normalised current velocity, fall back to +x
     vel = cells.vel[split_candidates]                              # (k, 2)
     mag = np.linalg.norm(vel, axis=1, keepdims=True)              # (k, 1)
-    dir_vec = np.where(mag > 1e-8, vel / mag, np.array([[1.0, 0.0]])).astype(np.float32)
+    safe_mag = np.where(mag > 1e-8, mag, np.float32(1.0))
+    dir_vec = np.where(mag > 1e-8, vel / safe_mag, np.array([[1.0, 0.0]])).astype(np.float32)
 
     cells.split_vel[new_slots] = dir_vec * config.split_speed
     cells.split_vel[split_candidates] = -dir_vec * (config.split_speed * 0.2)
@@ -239,7 +242,8 @@ def handle_eject(
     # Launch direction: same as the cell's current movement direction
     vel = cells.vel[eject_candidates]                              # (n, 2)
     mag = np.linalg.norm(vel, axis=1, keepdims=True)              # (n, 1)
-    dir_vec = np.where(mag > 1e-8, vel / mag, np.array([[1.0, 0.0]])).astype(np.float32)
+    safe_mag = np.where(mag > 1e-8, mag, np.float32(1.0))
+    dir_vec = np.where(mag > 1e-8, vel / safe_mag, np.array([[1.0, 0.0]])).astype(np.float32)
 
     ejected.pos[new_slots] = cells.pos[eject_candidates] + dir_vec * (
         np.sqrt(cells.mass[eject_candidates])[:, None] + 1.0

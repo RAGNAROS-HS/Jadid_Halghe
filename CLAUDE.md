@@ -5,7 +5,7 @@
 ## Phases
 
 - **Phase 1** ✅ — Game engine: fast, local, accurate agar.io clone. Human-playable alongside trained agents.
-- **Phase 2** — Pygame UI: renderer, camera, HUD, human + agent mixed sessions.
+- **Phase 2** ✅ — Pygame UI: renderer, camera, HUD, human + agent mixed sessions.
 - **Phase 3** — RL environment: Gymnasium + PettingZoo wrappers, observation/action spaces, reward function, VecEnv.
 - **Phase 4** — Agent architecture: MLP baseline, attention-based primary policy, recurrent option.
 - **Phase 5** — Training: PPO, rollout collection, logging, checkpointing, self-play curriculum.
@@ -19,7 +19,7 @@
 | `pytest` | Run all tests (34 tests, ~0.4 s) |
 | `ruff check .` | Lint |
 | `ruff format .` | Format |
-| `python main.py` | Run the game — Phase 2 (not yet implemented) |
+| `python main.py` | Human play: `--agents N --seed N --width N --height N --fps N --tps N --no-human` |
 | `python train.py --config configs/default.yaml` | Start RL training — Phase 5 (not yet implemented) |
 | `python eval.py --checkpoint <path>` | Evaluate a checkpoint — Phase 6 (not yet implemented) |
 
@@ -47,11 +47,11 @@ Jadid_Halghe/
     ppo.py           #   PPO algorithm
     buffer.py        #   Rollout buffer
     runner.py        #   Rollout collection
-  ui/                # Pygame renderer (Phase 2, not yet implemented)
-    renderer.py
-    camera.py
-    hud.py
-    input.py
+  ui/                # Pygame renderer ✅
+    camera.py        #   Camera — centroid follow, zoom, world↔screen, visible_mask()
+    input.py         #   handle_events() → (action[4], quit, paused)
+    renderer.py      #   Renderer.draw() — grid, food, viruses, ejected, cells
+    hud.py           #   HUD.draw() — leaderboard, FPS, minimap
   eval/              # Evaluation & replay (Phase 6, not yet implemented)
     harness.py
     replay.py
@@ -62,7 +62,7 @@ Jadid_Halghe/
   configs/           # YAML training configs (Phase 5)
   train.py           # Training entry point (Phase 5)
   eval.py            # Eval entry point (Phase 6)
-  main.py            # Human-play entry point (Phase 2)
+  main.py            # Human-play entry point ✅ — fixed-tick loop, random bots, respawn
 ```
 
 ## Code Style
@@ -149,3 +149,10 @@ Use `/pr` to auto-generate a PR with summary, test plan, and performance notes.
 - **`np.where(cond, a/b, 0)` still evaluates `a/b` eagerly.** Use `safe_denom = np.where(cond, denom, 1.0)` before dividing to avoid `RuntimeWarning: invalid value encountered in divide` when `denom` contains zeros.
 - **Eating condition uses mass ratio, not radius ratio directly.** `mass_A > eat_mass_ratio * mass_B` where `eat_mass_ratio = eat_ratio**2 = 1.21`. This avoids two `sqrt` calls per pair.
 - **`np.add.at` is used for mass accumulation after eating.** It handles the case where one predator eats multiple prey in the same tick correctly (unbuffered add). It is slower than `+=` but correct for repeated indices.
+- **`FoodArrays` uses a compact (no-holes) layout.** `pos[0:count]` are all alive food positions — no gaps. `allocate` appends at the end; `free` does a swap-with-last. Food slot indices are **not stable** between ticks; never store a food index across a tick boundary.
+- **Single-world NumPy throughput caps at ~3–4k TPS.** The bottleneck is Python dispatch overhead (~3 µs/call × ~25 NumPy calls/tick), not computation. The 10k TPS training target is reached via VecEnv (3 parallel worlds). Numba `@njit` would raise single-world TPS to 20–50k if needed.
+- **`world.step()` returns `(rewards, dones, info)`, not `(state, rewards, dones, info)`.** Call `world.get_state()` explicitly when a snapshot is needed — keeping it out of the hot loop saves ~15% of tick time.
+- **`main.py` accesses `world._active_players` directly.** There is no public API for querying which players are currently alive; reading the private set is intentional until a public accessor is added.
+- **Tick/render loops are decoupled.** `main.py` steps the world at `--tps` (default 25) using `time.perf_counter()` and renders at `--fps` (default 60) via `clock.tick()`. Do not couple them — rendering should never block the game tick or vice versa.
+- **`Camera.visible_mask()` uses world radii, not screen radii.** Pass world-unit radii (e.g. `np.sqrt(mass)`) — the method scales internally. Never pass pixel radii.
+- **`Renderer._draw_cells()` sorts by mass (smallest first).** This gives the correct agar.io visual layering: large cells appear on top of small ones. Changing the sort order breaks the intended look.

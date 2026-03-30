@@ -64,6 +64,7 @@ class GameState:
     food_pos: np.ndarray
     virus_pos: np.ndarray
     ejected_pos: np.ndarray
+    ejected_owner: np.ndarray
     player_alive: np.ndarray
     player_mass: np.ndarray
 
@@ -238,7 +239,8 @@ class World:
 
         # ── 2. Physics ─────────────────────────────────────────────────
         update_cells(self.cells, actions, cfg)
-        update_ejected(self.ejected, cfg)
+        if self.ejected.count > 0:
+            update_ejected(self.ejected, cfg)
 
         # ── 3. Collision resolution ─────────────────────────────────────
         food_gains = resolve_food_eating(self.cells, self.food, cfg)
@@ -247,14 +249,14 @@ class World:
         cell_gains = resolve_cell_eating(self.cells, cfg)
         rewards += cell_gains
 
-        resolve_ejected_eating(self.cells, self.ejected, cfg)
-
-        # Ejected mass hitting viruses
-        resolve_virus_feeding(self.ejected, self.viruses, self._rng, cfg)
+        if self.ejected.count > 0:
+            resolve_ejected_eating(self.cells, self.ejected, cfg)
+            resolve_virus_feeding(self.ejected, self.viruses, self._rng, cfg)
 
         # Virus collisions → split requests
         split_requests = resolve_virus_collision(self.cells, self.viruses, cfg)
-        apply_virus_splits(self.cells, split_requests, cfg)
+        if split_requests:
+            apply_virus_splits(self.cells, split_requests, cfg)
 
         # Cell–cell merging
         resolve_merging(self.cells, cfg)
@@ -331,6 +333,7 @@ class World:
             food_pos=self.food.pos[f_idx].copy() if len(f_idx) > 0 else np.empty((0, 2), dtype=np.float32),
             virus_pos=self.viruses.pos[v_idx].copy() if len(v_idx) > 0 else np.empty((0, 2), dtype=np.float32),
             ejected_pos=self.ejected.pos[e_idx].copy() if len(e_idx) > 0 else np.empty((0, 2), dtype=np.float32),
+            ejected_owner=self.ejected.owner[e_idx].copy() if len(e_idx) > 0 else np.empty(0, dtype=np.int32),
             player_alive=player_alive,
             player_mass=player_mass,
         )

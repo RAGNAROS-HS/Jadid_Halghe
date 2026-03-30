@@ -174,40 +174,54 @@ class FoodArrays:
     pos: np.ndarray
     alive: np.ndarray
 
-    _free: deque[int] = field(default_factory=deque, init=False, repr=False, compare=False)
     _count: int = field(default=0, init=False, repr=False, compare=False)
 
     @classmethod
     def create(cls, capacity: int) -> FoodArrays:
-        """Allocate zero-initialised buffers for *capacity* food slots."""
+        """Allocate zero-initialised buffers for *capacity* food slots.
+
+        Food uses a *compact* layout: ``pos[0 : count]`` are all alive
+        pellets with no holes.  This avoids the O(capacity) ``np.where``
+        scan that a sparse alive-mask would require.
+        """
         obj = cls(
             capacity=capacity,
             pos=np.zeros((capacity, 2), dtype=np.float32),
             alive=np.zeros(capacity, dtype=bool),
         )
-        obj._free = _make_free(capacity)
         obj._count = 0
         return obj
 
     def allocate(self, n: int) -> np.ndarray:
-        """Return up to *n* free slot indices (silently caps at available count)."""
-        n = min(n, len(self._free))
+        """Append up to *n* new food slots at the end of the live region."""
+        n = min(n, self.capacity - self._count)
         if n == 0:
             return np.empty(0, dtype=np.int32)
-        indices = np.array([self._free.popleft() for _ in range(n)], dtype=np.int32)
+        indices = np.arange(self._count, self._count + n, dtype=np.int32)
         self.alive[indices] = True
         self._count += n
         return indices
 
     def free(self, indices: np.ndarray) -> None:
-        """Return *indices* to the free pool."""
-        indices = np.asarray(indices, dtype=np.int32).ravel()
-        self.alive[indices] = False
-        self._free.extend(indices.tolist())
-        self._count -= len(indices)
+        """Remove pellets at *indices* using swap-with-last (O(k), no scans).
+
+        Compact invariant is maintained: each freed slot is filled by
+        the last live pellet, keeping ``pos[0 : count]`` contiguous.
+        """
+        indices = np.unique(np.asarray(indices, dtype=np.int32))[::-1]  # desc
+        for i in indices.tolist():
+            if i >= self._count:
+                continue
+            self._count -= 1
+            self.alive[i] = False
+            if i < self._count:
+                # Move last alive slot into the gap
+                self.pos[i] = self.pos[self._count]
+                self.alive[i] = True
+                self.alive[self._count] = False
 
     def free_count(self) -> int:
-        return len(self._free)
+        return self.capacity - self._count
 
     @property
     def count(self) -> int:
@@ -215,7 +229,8 @@ class FoodArrays:
         return self._count
 
     def alive_indices(self) -> np.ndarray:
-        return np.where(self.alive)[0].astype(np.int32)
+        """Return indices 0…count-1 — O(1), no array scan."""
+        return np.arange(self._count, dtype=np.int32)
 
 
 # ---------------------------------------------------------------------------
