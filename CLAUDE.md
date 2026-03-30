@@ -4,35 +4,66 @@
 
 ## Phases
 
-- **Phase 1** — Game engine: fast, local, accurate agar.io clone. Human-playable alongside trained agents.
-- **Phase 2** — RL infrastructure: training loop, agent architecture, evaluation.
+- **Phase 1** ✅ — Game engine: fast, local, accurate agar.io clone. Human-playable alongside trained agents.
+- **Phase 2** — Pygame UI: renderer, camera, HUD, human + agent mixed sessions.
+- **Phase 3** — RL environment: Gymnasium + PettingZoo wrappers, observation/action spaces, reward function, VecEnv.
+- **Phase 4** — Agent architecture: MLP baseline, attention-based primary policy, recurrent option.
+- **Phase 5** — Training: PPO, rollout collection, logging, checkpointing, self-play curriculum.
+- **Phase 6** — Evaluation: harness, replay, baselines, ablations.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `pip install -r requirements.txt` | Install dependencies |
-| `python main.py` | Run the game (human-playable mode) |
-| `python train.py` | Start RL training |
-| `pytest` | Run all tests |
+| `pytest` | Run all tests (34 tests, ~0.4 s) |
 | `ruff check .` | Lint |
 | `ruff format .` | Format |
+| `python main.py` | Run the game — Phase 2 (not yet implemented) |
+| `python train.py --config configs/default.yaml` | Start RL training — Phase 5 (not yet implemented) |
+| `python eval.py --checkpoint <path>` | Evaluate a checkpoint — Phase 6 (not yet implemented) |
 
-> Update this table as the project evolves.
+**Python version note:** Two Python installs exist on this machine. Use `C:/Users/Hugo/AppData/Local/Programs/Python/Python312/python.exe` (3.12) — packages are installed there. Python 3.13 at the default `python` path is missing most deps.
 
 ## Architecture
 
 ```
 Jadid_Halghe/
-  game/        # Game engine: entities, physics, collision, world state
-  rl/          # RL: environment wrapper, agent, training loop, replay buffer
-  ui/          # Renderer for human play (pygame or similar)
-  tests/       # All tests, mirroring source structure
-  train.py     # Training entry point
-  main.py      # Human-play entry point
+  game/              # Game engine ✅
+    config.py        #   WorldConfig — all simulation constants (frozen dataclass)
+    entities.py      #   CellArrays, FoodArrays, VirusArrays, EjectedArrays
+    physics.py       #   update_cells(), update_ejected()
+    collision.py     #   resolve_food_eating(), resolve_cell_eating(),
+                     #   resolve_ejected_eating(), resolve_virus_collision(),
+                     #   resolve_merging()
+    spawner.py       #   spawn_food/viruses, add_player, handle_split/eject,
+                     #   resolve_virus_feeding(), apply_virus_splits()
+    world.py         #   World class + GameState dataclass
+  rl/                # RL layer (Phase 3–5, not yet implemented)
+    env.py           #   Gymnasium single-agent wrapper
+    multi_env.py     #   PettingZoo parallel wrapper
+    vec_env.py       #   Vectorized env
+    agent.py         #   Neural network policies
+    ppo.py           #   PPO algorithm
+    buffer.py        #   Rollout buffer
+    runner.py        #   Rollout collection
+  ui/                # Pygame renderer (Phase 2, not yet implemented)
+    renderer.py
+    camera.py
+    hud.py
+    input.py
+  eval/              # Evaluation & replay (Phase 6, not yet implemented)
+    harness.py
+    replay.py
+    baselines.py
+  tests/
+    game/
+      test_mechanics.py   # 34 unit tests — all passing
+  configs/           # YAML training configs (Phase 5)
+  train.py           # Training entry point (Phase 5)
+  eval.py            # Eval entry point (Phase 6)
+  main.py            # Human-play entry point (Phase 2)
 ```
-
-> Update as directories are created.
 
 ## Code Style
 
@@ -111,6 +142,10 @@ Use `/pr` to auto-generate a PR with summary, test plan, and performance notes.
 
 ## Known Gotchas
 
-> Fill this section as you discover project-specific quirks.
-
-- [ ] (empty — add as you encounter them)
+- **`radius = sqrt(mass)` — no separate scale factor.** Mass values are chosen so radii fall in the right range: `start_mass=2500 → radius=50`, `food_mass=25 → radius=5`. Don't add a radius scale factor; adjust mass constants instead.
+- **`split_vel` is separate from `vel`.** `vel` is overwritten every tick by the steering direction. `split_vel` holds split momentum and decays by `split_decay` each tick. Both are summed for position update.
+- **Free-list uses a Python `deque`.** Allocation/deallocation is not on the hot path (only happens at discrete events). The hot path only reads/writes contiguous NumPy arrays via alive-index slices.
+- **`WorldConfig` is frozen (`frozen=True`).** Do not try to mutate it at runtime. Create a new instance if you need a different config.
+- **`np.where(cond, a/b, 0)` still evaluates `a/b` eagerly.** Use `safe_denom = np.where(cond, denom, 1.0)` before dividing to avoid `RuntimeWarning: invalid value encountered in divide` when `denom` contains zeros.
+- **Eating condition uses mass ratio, not radius ratio directly.** `mass_A > eat_mass_ratio * mass_B` where `eat_mass_ratio = eat_ratio**2 = 1.21`. This avoids two `sqrt` calls per pair.
+- **`np.add.at` is used for mass accumulation after eating.** It handles the case where one predator eats multiple prey in the same tick correctly (unbuffered add). It is slower than `+=` but correct for repeated indices.

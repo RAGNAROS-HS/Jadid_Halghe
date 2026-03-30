@@ -1,0 +1,17 @@
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "PIE"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["game", "rl", "ui", "eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+
+[tool.pytest-benchmark]
+min_rounds = 5
