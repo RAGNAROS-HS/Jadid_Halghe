@@ -1,0 +1,39 @@
+# RL training artifacts — large and not useful for code understanding
+checkpoints/
+runs/
+wandb/
+outputs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Training data
+data/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment — never read these
+.venv/
+venv/
+env/
+
+# Logs
+logs/
+*.log
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Coverage / test output
+htmlcov/
+.coverage
+
+# Profiling
+*.prof
+*.lprof

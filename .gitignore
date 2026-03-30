@@ -1,0 +1,73 @@
+# Claude Code — local machine settings, not shared
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+
+# Linting / formatting
+.ruff_cache/
+.mypy_cache/
+
+# RL / ML artifacts — keep these out of git
+checkpoints/
+runs/
+wandb/
+outputs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Training data (can be large — use external storage)
+data/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Profiling output
+*.prof
+*.lprof
