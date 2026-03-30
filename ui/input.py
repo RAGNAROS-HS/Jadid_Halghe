@@ -49,13 +49,11 @@ def handle_events(
             elif event.key == pygame.K_p:
                 paused = True
 
-    # Mouse direction (relative to screen centre)
+    # Raw screen-space mouse position.  The caller converts this to a
+    # world cursor position via camera.screen_to_world() and stores it in
+    # actions[:, :2] so that physics can compute per-cell steering directions.
     mx, my = pygame.mouse.get_pos()
-    dx = mx - screen_w / 2.0
-    dy = my - screen_h / 2.0
-    mag = (dx * dx + dy * dy) ** 0.5
-    if mag > 1e-4:
-        action[0] = dx / mag
-        action[1] = dy / mag
+    action[0] = float(mx)
+    action[1] = float(my)
 
     return action, quit_flag, paused

@@ -55,17 +55,22 @@ def update_cells(
 
     # ------------------------------------------------------------------
     # 1. Target velocity from player input
+    #
+    # actions[:, :2] holds the cursor's world-space position (target_x,
+    # target_y).  Each cell steers independently toward that point so that
+    # split cells naturally converge when the cursor is between them.
     # ------------------------------------------------------------------
     valid_owner = (owners >= 0) & (owners < config.max_players)
 
-    # Build (n, 2) direction array directly — one fancy-index per axis
     direction = np.zeros((len(idx), 2), dtype=np.float32)
     if valid_owner.any():
-        direction[valid_owner] = actions[owners[valid_owner], :2]
+        cursor = actions[owners[valid_owner], :2]           # (n_valid, 2)
+        delta = cursor - cells.pos[idx[valid_owner]]        # per-cell vector
+        direction[valid_owner] = delta.astype(np.float32)
 
-    # Normalise in-place; zero-length input leaves direction as zero
-    mag_sq = (direction * direction).sum(axis=1)   # (n,) float32
-    nonzero = mag_sq > _F32(1e-16)
+    # Normalise in-place; zero-length delta leaves direction as zero
+    mag_sq = (direction * direction).sum(axis=1)            # (n,) float32
+    nonzero = mag_sq > _F32(1e-8)
     if nonzero.any():
         mag = np.sqrt(mag_sq[nonzero], dtype=np.float32)
         direction[nonzero] /= mag[:, None]

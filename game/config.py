@@ -96,9 +96,9 @@ class WorldConfig:
     virus_mass: float = 2_500.0   # → radius ≈ 50 units
     min_split_mass: float = 2_500.0
     max_cells_per_player: int = 16
-    merge_time_base: float = 375.0        # ticks (= 15 s at 25 TPS)
-    merge_time_mass_factor: float = 50.0  # adds mass/50 ticks to merge time
-    mass_decay_rate: float = 0.0005       # per-tick fraction lost when above threshold
+    merge_time_base: float = 100.0         # ticks (= 4 s at 25 TPS)
+    merge_time_mass_factor: float = 50.0   # adds mass/50 ticks to merge time
+    mass_decay_rate: float = 0.0           # disabled — no passive mass loss
     mass_decay_threshold: float = 10_000.0
 
     # ── Physics ────────────────────────────────────────────────────────────

@@ -268,9 +268,10 @@ Key values baked into `WorldConfig` defaults (all tunable):
 | Start mass | 2 500 | → radius = √2500 = 50 units |
 | Food mass | 25 | → radius = 5 units |
 | Virus mass | 2 500 | → radius = 50 units |
-| Speed formula | `315 / mass^0.439` | units/tick at 25 TPS |
-| Min split mass | 5 000 | Need 2× start mass to split |
-| Merge time | `375 + mass/50` ticks | ≈ 15 s base at 25 TPS |
+| Speed formula | `20 000 / mass^0.439` | units/sec; × dt(1/25) per tick |
+| Min split mass | 2 500 | = start mass; can split immediately |
+| Merge time | `100 + mass/50` ticks | ≈ 4 s base at 25 TPS |
+| Mass decay | disabled | `mass_decay_rate = 0` |
 | eat_ratio | 1.1 | Need 1.21× mass to eat |
 
 ---

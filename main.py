@@ -85,6 +85,9 @@ def _interp_state(
 # Random bot policy
 # ---------------------------------------------------------------------------
 
+_WANDER_DIST = 3000.0   # world units ahead of centroid to place virtual cursor
+
+
 def _bot_action(
     bot_id: int,
     state: GameState,
@@ -92,7 +95,11 @@ def _bot_action(
     config: WorldConfig,
     bot_dirs: np.ndarray,
 ) -> np.ndarray:
-    """Simple bot: chase nearest eatable enemy cell, otherwise wander."""
+    """Simple bot: chase nearest eatable enemy; otherwise wander.
+
+    Returns an action row ``[target_x, target_y, split, eject]`` where
+    ``target_x/y`` is the world-space cursor position physics steers toward.
+    """
     action = np.zeros(4, dtype=np.float32)
 
     mask = state.cell_owner == bot_id
@@ -104,6 +111,7 @@ def _bot_action(
     bot_centroid = bot_pos.mean(axis=0)
     total_mass = float(bot_mass.sum())
 
+    # Chase nearest eatable enemy
     enemy_mask = (state.cell_owner != bot_id) & (state.cell_owner >= 0)
     if enemy_mask.any():
         enemy_pos = state.cell_pos[enemy_mask]
@@ -111,27 +119,23 @@ def _bot_action(
         can_eat = enemy_mass * (config.eat_ratio ** 2) < total_mass
         if can_eat.any():
             targets = enemy_pos[can_eat]
-            diffs = targets - bot_centroid
-            nearest = np.argmin((diffs * diffs).sum(axis=1))
-            direction = diffs[nearest]
-            mag = float(np.linalg.norm(direction))
-            if mag > 1e-4:
-                action[0] = direction[0] / mag
-                action[1] = direction[1] / mag
-                return action
+            nearest = int(np.argmin(((targets - bot_centroid) ** 2).sum(axis=1)))
+            action[0] = float(targets[nearest, 0])
+            action[1] = float(targets[nearest, 1])
+            if total_mass > config.min_split_mass * 1.5 and rng.random() < 0.01:
+                action[2] = 1.0
+            return action
 
-    # Wander with slight random perturbation
+    # Wander: project current direction to a world target position
     noise = rng.standard_normal(2).astype(np.float32)
     new_dir = bot_dirs[bot_id] + noise * 0.3
     mag = float(np.linalg.norm(new_dir))
     new_dir = new_dir / mag if mag > 1e-4 else np.array([1.0, 0.0], dtype=np.float32)
     bot_dirs[bot_id] = new_dir
 
-    action[0] = new_dir[0]
-    action[1] = new_dir[1]
-
-    if total_mass > config.min_split_mass * 1.5 and rng.random() < 0.005:
-        action[2] = 1.0
+    target = bot_centroid + new_dir * _WANDER_DIST
+    action[0] = float(np.clip(target[0], 0.0, config.width))
+    action[1] = float(np.clip(target[1], 0.0, config.height))
 
     return action
 
@@ -211,10 +215,18 @@ def main() -> None:
     pause_font = pygame.font.SysFont("Arial", 48, bold=True)
 
     # ── State ─────────────────────────────────────────────────────────────
-    # actions is PERSISTENT across render frames so that one-shot events
-    # (KEYDOWN for Space/W) are latched until the next simulation tick
-    # consumes them, regardless of when the tick fires relative to frames.
+    # actions[:, :2] holds world-space cursor positions (target_x, target_y).
+    # Initialised to each player's spawn centroid so there is no spurious
+    # drift before the first mouse/bot update.
     actions = np.zeros((cfg.max_players, 4), dtype=np.float32)
+    init_state = world.get_state()
+    all_ids = ([human_id] if has_human else []) + bot_ids
+    for pid in all_ids:
+        pmask = init_state.cell_owner == pid
+        if pmask.any():
+            c = init_state.cell_pos[pmask].mean(axis=0)
+            actions[pid, 0] = float(c[0])
+            actions[pid, 1] = float(c[1])
 
     prev_state: GameState | None = None
     curr_state = world.get_state()
@@ -244,9 +256,10 @@ def main() -> None:
             if toggled_pause:
                 paused = not paused
 
-            # Direction: overwrite each frame (mouse position is continuous)
-            actions[human_id, 0] = human_action[0]
-            actions[human_id, 1] = human_action[1]
+            # Convert screen mouse position → world cursor position each frame.
+            wx, wy = camera.screen_to_world(human_action[0], human_action[1])
+            actions[human_id, 0] = wx
+            actions[human_id, 1] = wy
             # Split / eject: LATCH — set to 1 here, cleared only after a tick
             # consumes them.  This guarantees key presses are never dropped.
             if human_action[2] > 0.5:
