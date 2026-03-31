@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `rl/ma_vec_env.py`: `VecAgarMAEnv` — vectorised multi-agent env with N worlds × M RL-controlled agents all sharing a single policy.  Each `(world, agent)` pair is an independent stream; Runner/buffer/PPO require no changes.  Agents auto-respawn on death; worlds reset on `max_ticks`.
+- `rl/video.py`: `render_episode_to_video()` — headless matplotlib renderer that converts a list of `GameState` frames to a GIF or MP4.  `record_video()` — runs a short episode with the current policy and saves it; called automatically during training.
+- `train.py`: multi-agent training mode — when `env.n_agents > 0` (default: 8), uses `VecAgarMAEnv` instead of `VecAgarEnv`; all agents learn simultaneously via shared-weight PPO.  Saves a training video every `video_interval` rollouts.
+- `configs/default.yaml`: replaced `n_bots` with `n_agents: 8`; added `video_interval: 100` and `video_ticks: 300`.
+- `main.py`: `--checkpoint PATH` flag — bots use a trained policy loaded from a checkpoint instead of the random heuristic.  Bot names on the leaderboard change from "Bot N" to "Agent N" when a checkpoint is active.
+
 ---
 
 ## [0.6.0] — Phase 6: Evaluation & Analysis

@@ -2,8 +2,8 @@
 # Run: python train.py --config configs/default.yaml
 
 env:
-  n_envs: 3          # parallel worlds; 3 × ~3500 TPS ≈ 10 500 agent-steps/sec
-  n_bots: 7          # random-bot opponents per world
+  n_envs: 3          # parallel worlds
+  n_agents: 8        # RL-controlled agents per world (all learn); set to 0 to use random bots instead
   max_ticks: 2000    # episode length before truncation (~80 s at 25 TPS)
 
 policy:
@@ -33,5 +33,7 @@ train:
   total_steps: 10_000_000
   log_interval: 1        # rollouts between TensorBoard log writes
   save_interval: 100     # rollouts between checkpoint saves
+  video_interval: 100    # rollouts between training videos (0 = disabled)
+  video_ticks: 300       # ticks to simulate per training video
   checkpoint_dir: checkpoints/run_default
   seed: 0

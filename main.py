@@ -7,6 +7,8 @@ Usage
     python main.py --agents 0         # solo (only human)
     python main.py --seed 7           # deterministic seed
     python main.py --width 1600 --height 900
+    python main.py --checkpoint ckpt.pt           # bots use trained policy
+    python main.py --checkpoint ckpt.pt --agents 7
 
 Controls
 --------
@@ -26,8 +28,11 @@ import time
 import numpy as np
 import pygame
 
+import torch
+
 from game.config import WorldConfig
 from game.world import GameState, World
+from rl.env import build_observation
 from ui.camera import Camera
 from ui.hud import HUD
 from ui.input import handle_events
@@ -140,6 +145,46 @@ def _bot_action(
     return action
 
 
+def _load_trained_bot(checkpoint: str) -> object:
+    """Load a policy from *checkpoint* and return it in eval mode."""
+    from rl.agent import load_policy
+    policy, _ = load_policy(checkpoint)
+    policy.eval()
+    return policy
+
+
+def _trained_bot_action(
+    bot_id: int,
+    state: GameState,
+    policy: object,
+    cfg: WorldConfig,
+    pos_scale: float,
+    large_scale: float,
+) -> np.ndarray:
+    """Run the trained policy for *bot_id* and return a world-space action row."""
+    mask = state.cell_owner == bot_id
+    if not mask.any():
+        return np.zeros(4, dtype=np.float32)
+
+    obs = build_observation(state, bot_id, cfg, pos_scale)
+    with torch.no_grad():
+        z, _, _ = policy.act(obs, deterministic=True)
+        act = torch.tanh(z).squeeze(0).cpu().numpy().astype(np.float32)
+
+    # Centroid of bot's cells
+    pos = state.cell_pos[mask]
+    mass = state.cell_mass[mask]
+    total = float(mass.sum())
+    centroid = (pos * mass[:, None]).sum(axis=0) / total if total > 0 else pos.mean(axis=0)
+
+    action = np.zeros(4, dtype=np.float32)
+    action[0] = centroid[0] + act[0] * large_scale
+    action[1] = centroid[1] + act[1] * large_scale
+    action[2] = 1.0 if act[2] > 0.0 else 0.0
+    action[3] = 1.0 if act[3] > 0.0 else 0.0
+    return action
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -160,6 +205,8 @@ def main() -> None:
                         help="Simulation ticks per second (default: 25)")
     parser.add_argument("--no-human", action="store_true",
                         help="Spectator mode: all players are bots")
+    parser.add_argument("--checkpoint", metavar="PATH", default=None,
+                        help="Policy checkpoint — bots use the trained agent instead of the random heuristic")
     args = parser.parse_args()
 
     # ── Config ────────────────────────────────────────────────────────────
@@ -176,6 +223,15 @@ def main() -> None:
     tick_interval = 1.0 / args.tps
 
     rng = np.random.default_rng(args.seed)
+
+    # ── Trained bot policy (optional) ─────────────────────────────────────
+    trained_policy = None
+    pos_scale = float(max(cfg.width, cfg.height)) / 2.0
+    large_scale = float(max(cfg.width, cfg.height))
+    if args.checkpoint is not None:
+        print(f"Loading checkpoint: {args.checkpoint}")
+        trained_policy = _load_trained_bot(args.checkpoint)
+        print("Trained policy loaded — bots will use it.")
 
     # ── World setup ────────────────────────────────────────────────────────
     world = World(cfg)
@@ -199,8 +255,9 @@ def main() -> None:
     player_names: dict[int, str] = {}
     if has_human:
         player_names[human_id] = "You"
+    bot_label = "Agent" if args.checkpoint is not None else "Bot"
     for bid in bot_ids:
-        player_names[bid] = f"Bot {bid}"
+        player_names[bid] = f"{bot_label} {bid}"
 
     # ── Pygame setup ───────────────────────────────────────────────────────
     pygame.init()
@@ -286,9 +343,15 @@ def main() -> None:
                 # Bot actions are computed once per tick from the last known state
                 for bid in bot_ids:
                     if bid in world._active_players:
-                        actions[bid] = _bot_action(
-                            bid, curr_state, rng, cfg, bot_dirs
-                        )
+                        if trained_policy is not None:
+                            actions[bid] = _trained_bot_action(
+                                bid, curr_state, trained_policy, cfg,
+                                pos_scale, large_scale,
+                            )
+                        else:
+                            actions[bid] = _bot_action(
+                                bid, curr_state, rng, cfg, bot_dirs
+                            )
 
                 # Advance simulation
                 prev_state = curr_state

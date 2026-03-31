@@ -213,10 +213,12 @@ Jadid_Halghe/
     env.py           #   AgarEnv (Gymnasium) — single-agent; random-bot opponents
     multi_env.py     #   AgarParallelEnv (PettingZoo) — all-agent RL
     vec_env.py       #   VecAgarEnv — synchronous N-env wrapper, auto-reset
+    ma_vec_env.py    #   VecAgarMAEnv — N worlds × M RL agents, shared policy
     agent.py         #   MLPPolicy, AttentionPolicy, RecurrentPolicy; build/load helpers
     buffer.py        #   RolloutBuffer — pre-allocated, GAE, minibatch iterator
     ppo.py           #   PPO — clipped surrogate + value + entropy
     runner.py        #   Runner — stateful rollout collector
+    video.py         #   render_episode_to_video(), record_video() — headless GIF/MP4
   ui/                # Pygame renderer — Phase 2 ✅
     renderer.py      #   draw food/viruses/cells/ejected with culling
     camera.py        #   viewport follow, zoom, world↔screen transforms
@@ -309,19 +311,27 @@ python benchmark.py
 # Lint + format check
 ruff check . && ruff format .
 
-# Human play (Phase 2 complete)
-python main.py                    # 4 bots + human
-python main.py --agents 8         # 8 bots + human
+# Human play
+python main.py                    # 4 random bots + human
+python main.py --agents 8         # 8 random bots + human
 python main.py --agents 0         # solo
 python main.py --no-human         # spectate bots only
 
-# Train from scratch (Phase 5 complete)
+# Play against a trained agent
+python main.py --checkpoint checkpoints/run_default/ckpt_000100.pt
+python main.py --checkpoint ckpt.pt --agents 7
+python main.py --checkpoint ckpt.pt --no-human   # spectate trained agents
+
+# Train — all 8 agents learn simultaneously (multi-agent, default config)
 python train.py --config configs/default.yaml
 
 # Resume from checkpoint
 python train.py --config configs/default.yaml --resume checkpoints/run_default/ckpt_000100.pt
 
-# Evaluate a checkpoint (Phase 6 complete)
+# Train on GPU
+python train.py --config configs/default.yaml --device cuda
+
+# Evaluate a checkpoint
 python eval.py --checkpoint checkpoints/run_default/ckpt_000100.pt --episodes 20
 python eval.py --checkpoint ckpt.pt --opponents greedy --save-replay replays/ep.pkl --plot
 

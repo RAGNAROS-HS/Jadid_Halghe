@@ -10,6 +10,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import random
 import time
@@ -22,6 +23,7 @@ import yaml
 
 from game.config import WorldConfig
 from rl.agent import build_policy, load_policy
+from rl.ma_vec_env import VecAgarMAEnv
 from rl.ppo import PPO
 from rl.runner import Runner
 from rl.vec_env import VecAgarEnv
@@ -91,12 +93,25 @@ def main() -> None:
 
     # ── Environment ─────────────────────────────────────────────────────────
     world_cfg = WorldConfig()
-    venv = VecAgarEnv(
-        n_envs=cfg.env.n_envs,
-        config=world_cfg,
-        n_bots=cfg.env.n_bots,
-        max_ticks=cfg.env.max_ticks,
-    )
+    n_agents: int = getattr(cfg.env, "n_agents", 0)
+    if n_agents > 0:
+        venv = VecAgarMAEnv(
+            n_envs=cfg.env.n_envs,
+            n_agents=n_agents,
+            config=world_cfg,
+            max_ticks=cfg.env.max_ticks,
+        )
+        log.info("Multi-agent env: %d worlds × %d agents = %d streams",
+                 cfg.env.n_envs, n_agents, venv.num_envs)
+    else:
+        n_bots: int = getattr(cfg.env, "n_bots", 7)
+        venv = VecAgarEnv(
+            n_envs=cfg.env.n_envs,
+            config=world_cfg,
+            n_bots=n_bots,
+            max_ticks=cfg.env.max_ticks,
+        )
+        log.info("Single-agent env: %d worlds, %d random bots each", cfg.env.n_envs, n_bots)
     obs_dim: int = venv.single_observation_space.shape[0]
     act_dim: int = venv.single_action_space.shape[0]
 
@@ -111,11 +126,15 @@ def main() -> None:
         start_step = meta.get("step", 0)
         policy = policy.to(device)
     else:
+        from rl.agent import MLPPolicy, AttentionPolicy, RecurrentPolicy
+        _cls_map = {"mlp": MLPPolicy, "attention": AttentionPolicy, "recurrent": RecurrentPolicy}
+        _valid = set(inspect.signature(_cls_map[policy_type]).parameters) - {"obs_dim", "act_dim"}
+        filtered_cfg = {k: v for k, v in policy_cfg.items() if k in _valid}
         policy = build_policy(
             policy_type,
             obs_dim=obs_dim,
             act_dim=act_dim,
-            **policy_cfg,
+            **filtered_cfg,
         ).to(device)
 
     n_params = sum(p.numel() for p in policy.parameters())
@@ -223,6 +242,27 @@ def main() -> None:
                 optimizer_state_dict=optimizer.state_dict(),
             )
             log.info("Saved checkpoint → %s", ckpt_path)
+
+        # ── Video ────────────────────────────────────────────────────────
+        video_interval = getattr(cfg.train, "video_interval", 0)
+        if video_interval > 0 and rollout_idx % video_interval == 0:
+            from rl.video import record_video
+            video_n_agents = n_agents if n_agents > 0 else 1
+            video_path = ckpt_dir / f"video_{rollout_idx:06d}.gif"
+            video_ticks = getattr(cfg.train, "video_ticks", 300)
+            try:
+                record_video(
+                    policy=policy,
+                    cfg=world_cfg,
+                    n_agents=video_n_agents,
+                    path=video_path,
+                    n_ticks=video_ticks,
+                    seed=cfg.train.seed,
+                    device=device,
+                )
+                log.info("Saved video → %s", video_path)
+            except Exception as exc:
+                log.warning("Video render failed: %s", exc)
 
     # Final checkpoint
     final_path = ckpt_dir / "ckpt_final.pt"
