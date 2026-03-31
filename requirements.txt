@@ -8,4 +8,5 @@ hypothesis>=6.100
 pytest>=8.0
 pytest-benchmark>=4.0
 pyyaml>=6.0
+matplotlib>=3.8
 ruff>=0.4

@@ -412,6 +412,85 @@ class AttentionPolicy(nn.Module):
         entropy = dist.entropy().sum(-1).mean()
         return log_prob, value, entropy
 
+    def attention_maps(
+        self,
+        obs: np.ndarray | Tensor,
+    ) -> tuple[Tensor, list[np.ndarray]]:
+        """Compute per-layer attention weights alongside the deterministic action.
+
+        Runs a manual forward pass through each transformer layer, calling
+        ``MultiheadAttention`` with ``need_weights=True`` (per-head) to extract
+        the attention matrices.  The policy must be in ``.eval()`` mode so that
+        dropout is disabled.
+
+        Parameters
+        ----------
+        obs : ndarray or Tensor, shape (obs_dim,) or (1, obs_dim)
+            Single observation.
+
+        Returns
+        -------
+        mean_action : Tensor, shape (1, act_dim)
+            Deterministic pre-tanh action (same as ``act(obs, deterministic=True)``).
+        weights : list of ndarray, len == n_layers
+            Per-layer attention weights.  Each array has shape
+            ``(1, n_heads, n_tokens, n_tokens)`` where ``n_tokens = 66``.
+
+        Notes
+        -----
+        Token order: ``[own×16 | food×20 | virus×10 | enemy×20]``.
+        Use :data:`~rl.env.K_OWN`, :data:`~rl.env.K_FOOD`, etc. for boundaries.
+        """
+        obs_t = _to_tensor(obs, self.device)
+        if obs_t.ndim == 1:
+            obs_t = obs_t.unsqueeze(0)
+        B = obs_t.shape[0]
+
+        own = obs_t[:, _OWN_S:_OWN_E].view(B, K_OWN, 3)
+        food = obs_t[:, _FOOD_S:_FOOD_E].view(B, K_FOOD, 2)
+        virus = obs_t[:, _VIR_S:_VIR_E].view(B, K_VIRUS, 2)
+        enemy = obs_t[:, _ENM_S:_ENM_E].view(B, K_ENEMY, 3)
+        scalars = obs_t[:, _SCL_S:_SCL_E]
+
+        own_emb = self.own_proj(own) + self.type_emb[0]
+        food_emb = self.food_proj(food) + self.type_emb[1]
+        virus_emb = self.virus_proj(virus) + self.type_emb[2]
+        enemy_emb = self.enemy_proj(enemy) + self.type_emb[3]
+        tokens = torch.cat([own_emb, food_emb, virus_emb, enemy_emb], dim=1)
+
+        own_real = own.abs().sum(-1) > 1e-6
+        food_real = food.abs().sum(-1) > 1e-6
+        virus_real = virus.abs().sum(-1) > 1e-6
+        enemy_real = enemy.abs().sum(-1) > 1e-6
+        is_real = torch.cat([own_real, food_real, virus_real, enemy_real], dim=1)
+        pad_mask = ~is_real
+
+        # Step through each transformer layer manually, extracting weights
+        all_weights: list[np.ndarray] = []
+        x = tokens
+        for layer in self.transformer.layers:
+            # Pre-LN: x = x + attn(norm1(x))
+            x_n = layer.norm1(x)
+            attn_out, attn_w = layer.self_attn(
+                x_n, x_n, x_n,
+                key_padding_mask=pad_mask,
+                need_weights=True,
+                average_attn_weights=False,  # per-head weights
+            )
+            all_weights.append(attn_w.detach().cpu().numpy())  # (B, n_heads, N, N)
+            x = x + layer.dropout1(attn_out)
+            # Pre-LN: x = x + ff(norm2(x))
+            x_n = layer.norm2(x)
+            x = x + layer.dropout2(
+                layer.linear2(layer.dropout(layer.activation(layer.linear1(x_n))))
+            )
+
+        n_real = is_real.float().sum(-1, keepdim=True).clamp(min=1.0)
+        pooled = (x * is_real.unsqueeze(-1).float()).sum(1) / n_real
+        feat = torch.cat([pooled, scalars], dim=-1)
+        mean = self.actor_mean(feat)
+        return mean, all_weights
+
     def save(self, path: str | Path, step: int = 0, **meta: Any) -> None:
         """Save policy to *path*. See :meth:`MLPPolicy.save`."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)

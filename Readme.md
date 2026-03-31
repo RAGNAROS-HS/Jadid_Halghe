@@ -176,23 +176,23 @@ Goal: stable, reproducible RL training with clean logging and checkpointing.
 
 ---
 
-### Phase 6 — Evaluation & Analysis
+### Phase 6 — Evaluation & Analysis ✅
 
 Goal: understand what the agent learned and how well it generalizes.
 
 **6.1 — Evaluation harness**
-- [ ] Run N evaluation episodes with agent in `.eval()` mode; log aggregate stats
-- [ ] Opponents: random bots, greedy bots, past checkpoints, human (via UI)
-- [ ] `eval.py --checkpoint <path> --opponents <type> --episodes <N>`
+- [x] Run N evaluation episodes with agent in `.eval()` mode; log aggregate stats
+- [x] Opponents: random bots, greedy bots, past checkpoints
+- [x] `eval.py --checkpoint <path> --opponents <type> --episodes <N>`
 
 **6.2 — Visualization**
-- [ ] Replay system: save episode trajectories to disk; replay via UI
-- [ ] Attention weight overlay: highlight which entities the agent is "watching"
-- [ ] Mass-over-time plot per episode
+- [x] Replay system: save episode trajectories to disk; replay via Pygame UI
+- [x] Attention weight overlay: `AttentionPolicy.attention_maps(obs)` returns per-head weights
+- [x] Mass-over-time plot per episode (matplotlib)
 
 **6.3 — Ablations & baselines**
-- [ ] Random policy baseline
-- [ ] Greedy heuristic baseline (always move toward nearest smaller cell)
+- [x] `RandomPolicy` baseline (uniform random actions)
+- [x] `GreedyPolicy` heuristic (chase edible enemies → food → flee threats)
 - [ ] DQN baseline (using discrete action space)
 - [ ] Comparison table in docs
 
@@ -222,10 +222,10 @@ Jadid_Halghe/
     camera.py        #   viewport follow, zoom, world↔screen transforms
     hud.py           #   leaderboard, FPS counter, minimap
     input.py         #   mouse direction, Space/W/P keys
-  eval/              # Evaluation & replay — Phase 6 (not yet implemented)
-    harness.py
-    replay.py
-    baselines.py
+  eval/              # Evaluation & replay — Phase 6 ✅
+    harness.py       #   Harness — run N eval episodes, compute EvalResult
+    replay.py        #   ReplayEpisode, save/load, Pygame playback, mass plot
+    baselines.py     #   RandomPolicy, GreedyPolicy
   tests/
     game/
       test_mechanics.py   # 34 tests — all passing
@@ -233,10 +233,12 @@ Jadid_Halghe/
       test_env.py         # 23 tests — all passing
       test_agent.py       # 24 tests — all passing
       test_training.py    # 12 tests — all passing
+    eval/
+      test_eval.py        # 34 tests — all passing
   configs/
     default.yaml     #   Default PPO hyperparameters (attention policy, 3 envs, 10M steps)
   train.py           # PPO training entry point ✅ (`python train.py --config configs/default.yaml`)
-  eval.py            # Eval entry point (Phase 6, not yet implemented)
+  eval.py            # Eval entry point ✅ (`python eval.py --checkpoint <path>`)
   main.py            # Human-play entry point ✅ (`python main.py --agents N`)
 ```
 
@@ -318,4 +320,11 @@ python train.py --config configs/default.yaml
 
 # Resume from checkpoint
 python train.py --config configs/default.yaml --resume checkpoints/run_default/ckpt_000100.pt
+
+# Evaluate a checkpoint (Phase 6 complete)
+python eval.py --checkpoint checkpoints/run_default/ckpt_000100.pt --episodes 20
+python eval.py --checkpoint ckpt.pt --opponents greedy --save-replay replays/ep.pkl --plot
+
+# Replay a saved episode
+python eval.py --replay replays/ep.pkl
 ```

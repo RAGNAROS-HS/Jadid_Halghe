@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.6.0] — Phase 6: Evaluation & Analysis
+
+### Added
+- `eval/baselines.py`: `RandomPolicy` — seeded uniform-random baseline; `GreedyPolicy` — heuristic policy that chases edible enemies, moves to nearest food, and flees nearby threats.  Neither emits split or eject actions.
+- `eval/harness.py`: `Harness` — runs N evaluation episodes using `World` directly (not `AgarEnv`).  Supports trained policies (`MLPPolicy` / `AttentionPolicy`), baseline policies, or checkpoint paths as both eval agent and opponent.  Returns `EvalResult` (aggregate stats) + optional per-tick `GameState` replay frames.  `EpisodeResult` stores per-episode reward, length, final mass, survival flag, and rank.
+- `eval/replay.py`: `ReplayEpisode` dataclass (config + frames + metadata); `save_replay()` / `load_replay()` via pickle; `replay_with_ui()` — Pygame playback with arrow-key scrubbing; `plot_mass_over_time()` — matplotlib mass curves over episodes.
+- `eval/__init__.py`: package-level re-exports for all public eval symbols.
+- `eval.py`: CLI entry point.  Eval mode: `--checkpoint`, `--opponents`, `--episodes`, `--n-bots`, `--max-ticks`, `--seed`, `--device`, `--save-replay`, `--plot`, `--output`.  Replay mode: `--replay`, `--replay-fps`, `--replay-speed`.
+- `rl/agent.py`: `AttentionPolicy.attention_maps(obs)` — manually steps through Pre-LN transformer layers with `need_weights=True` to return per-head attention weights `(n_layers × (1, n_heads, N, N))` without modifying the existing forward pass.
+- `tests/eval/test_eval.py`: 34 tests covering `RandomPolicy`, `GreedyPolicy`, `Harness` (shapes, no-NaN, determinism, trained policies), replay save/load roundtrip, `plot_mass_over_time`, and `attention_maps` (shape, softmax sum, no-NaN).
+- `requirements.txt`: added `matplotlib>=3.8` for mass-over-time plots.
+
+---
+
 ## [0.5.0] — Phase 4+5: Agent Architecture & Training Infrastructure
 
 ### Added
