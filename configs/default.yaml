@@ -1,0 +1,39 @@
+# Default PPO hyperparameters for Jadid_Halghe
+# Run: python train.py --config configs/default.yaml
+
+env:
+  n_envs: 3          # parallel worlds
+  n_agents: 8        # RL-controlled agents per world (all learn); set to 0 to use random bots instead
+  max_ticks: 2000    # episode length before truncation (~80 s at 25 TPS)
+
+policy:
+  type: attention    # mlp | attention | recurrent
+  # MLPPolicy / RecurrentPolicy
+  hidden_dim: 256
+  # AttentionPolicy
+  embed_dim: 64
+  n_heads: 4
+  n_layers: 2
+  # RecurrentPolicy only
+  gru_hidden: 128
+
+ppo:
+  n_steps: 512       # rollout steps per env (total batch = n_steps × n_envs = 1536)
+  n_epochs: 4        # gradient passes per rollout
+  batch_size: 256
+  clip_range: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  lr: 3.0e-4
+
+train:
+  total_steps: 10_000_000
+  log_interval: 1        # rollouts between TensorBoard log writes
+  save_interval: 100     # rollouts between checkpoint saves
+  video_interval: 100    # rollouts between training videos (0 = disabled)
+  video_ticks: 300       # ticks to simulate per training video
+  checkpoint_dir: checkpoints/run_default
+  seed: 0
