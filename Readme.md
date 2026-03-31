@@ -87,98 +87,92 @@ Goal: render the simulation with Pygame so a human can play against (or alongsid
 
 ---
 
-### Phase 3 — RL Environment Wrapper
+### Phase 3 — RL Environment Wrapper ✅
 
 Goal: wrap the game engine in a Gymnasium-compatible interface ready for standard RL libraries.
 
 **3.1 — Observation space**
-- [ ] Ego-centric local view: fixed-size grid or K-nearest-neighbor list centered on agent
-- [ ] Channels: food, friendly cells, enemy cells, viruses — each with (dx, dy, radius) features
-- [ ] Global features: own total mass, number of splits remaining, merge cooldown
-- [ ] Observation normalized to `[0, 1]` or `[-1, 1]`; dtype `float32`
-- [ ] Configurable view radius and max entity count per channel
+- [x] Ego-centric local view: K-nearest-neighbor list centered on agent centroid
+- [x] Channels: food, friendly cells, enemy cells, viruses — relative position + log-mass features
+- [x] Global features: own total log-mass, cell-count fraction
+- [x] Observation normalized and clipped to `[-10, 10]`; dtype `float32`; total dim = 170
+- [ ] Configurable K per channel (currently fixed: own=16, food=20, virus=10, enemy=20)
 
 **3.2 — Action space**
-- [ ] Continuous: `Box([-1,-1, 0, 0], [1, 1, 1, 1])` — (dx, dy, split, eject) where split/eject are Bernoulli thresholded
+- [x] Continuous: `Box([-1,-1,-1,-1], [1,1,1,1])` — `(dx, dy)` direction + split/eject logits (thresholded at 0)
 - [ ] Discrete variant (for DQN baselines): 8 movement directions × {none, split, eject}
-- [ ] Both wrappers provided; flag-selectable
 
 **3.3 — Reward function**
-- [ ] Primary: `Δ(own_mass)` per tick — growing is rewarded, shrinking penalized
-- [ ] Elimination bonus: large reward for eating the last cell of an opponent
-- [ ] Death penalty: large negative reward on elimination
-- [ ] Survival bonus: small per-tick reward for staying alive (tunable weight)
-- [ ] No NaN/Inf guaranteed; reward clipping with assertion checks
+- [x] Primary: `Δ(own_mass) / start_mass` per tick
+- [x] Death penalty: `-1.0` on elimination (= `-start_mass / start_mass`)
+- [x] No NaN/Inf guaranteed (tested)
+- [ ] Elimination bonus, survival bonus (tunable weights — deferred to Phase 5 tuning)
 
 **3.4 — Multi-agent interface**
-- [ ] `PettingZoo`-compatible `ParallelEnv` wrapper (all agents step simultaneously)
-- [ ] Gymnasium single-agent wrapper available (one agent, rest are bots/frozen)
-- [ ] `env.reset(seed=...)` resets world and re-seeds all RNG sources
+- [x] `PettingZoo`-compatible `AgarParallelEnv` (all agents step simultaneously; dead agents removed from `self.agents`)
+- [x] Gymnasium `AgarEnv` single-agent wrapper (agent 0 is RL; remaining slots are random-direction bots with auto-respawn)
+- [x] `env.reset(seed=...)` resets world and re-seeds RNG
 
 **3.5 — Vectorized / batched environments**
-- [ ] `VecEnv` wrapper: N independent worlds stepped in parallel (NumPy, then optional multiprocessing)
-- [ ] Shared-memory transport between worker processes (avoid pickle overhead)
-- [ ] Step throughput target: ≥ 1 M agent-steps/sec across 16 parallel envs
+- [x] `VecAgarEnv`: N independent worlds stepped synchronously; auto-reset on episode end; terminal obs in `info["final_observation"]`
+- [ ] Shared-memory / multiprocessing transport (sequential is sufficient for current throughput target)
+- [ ] ≥ 1M agent-steps/sec (current: ~10 k steps/sec with 3 envs; Numba path available if needed)
 
 ---
 
-### Phase 4 — Agent Architecture
+### Phase 4 — Agent Architecture ✅
 
 Goal: neural network policies that can efficiently process the agar.io observation.
 
 **4.1 — Baseline MLP policy**
-- [ ] Simple 3-layer MLP over flattened observation vector
-- [ ] Separate value head (actor-critic)
-- [ ] Serves as a fast-to-train sanity-check baseline
+- [x] 3-layer MLP (256→128) over flat 170-dim observation
+- [x] Separate actor head (mean) + shared `log_std` parameter + critic head
 
 **4.2 — Attention-based policy (primary)**
-- [ ] Each nearby entity encoded as a feature vector (type embedding + position + radius)
-- [ ] Transformer encoder over entity set (permutation-invariant)
-- [ ] Pooled representation fed to actor and critic heads
-- [ ] Handles variable-length entity lists without padding waste
+- [x] Per-group projections to `embed_dim=64` + learned type embeddings (4 types)
+- [x] Pre-LN TransformerEncoder (2 layers, 4 heads) over 66 entity tokens
+- [x] Zero-pad masking (real vs. padded slots detected via feature norm); safe mean pool
+- [x] Actor + critic heads on (pooled entities ‖ scalars)
 
 **4.3 — Recurrent option**
-- [ ] Optional GRU wrapper around the policy for partial observability experiments
-- [ ] Hidden state managed per-agent across episodes
+- [x] `RecurrentPolicy`: GRU-wrapped MLP; `initial_state()` → hidden, passed through `act()`
+- [x] Documented that the provided `Runner` is non-recurrent; custom loop required
 
 **4.4 — Model utilities**
-- [ ] Orthogonal weight initialization
-- [ ] Gradient clipping configurable per module
-- [ ] `model.save(path)` / `model.load(path)` with metadata (hyperparams, step count)
-- [ ] ONNX export for potential browser/non-Python deployment
+- [x] Orthogonal init on all Linear layers (gain √2; output heads: 0.01 / 1.0)
+- [x] Gradient clipping in PPO (`max_grad_norm`)
+- [x] `policy.save(path, step=N)` / `Policy.load(path)` with type + config + optimizer state
+- [ ] ONNX export (deferred)
 
 ---
 
-### Phase 5 — Training Infrastructure
+### Phase 5 — Training Infrastructure ✅
 
 Goal: stable, reproducible RL training with clean logging and checkpointing.
 
 **5.1 — PPO implementation**
-- [ ] Clipped surrogate objective, entropy bonus, value loss coefficient
-- [ ] GAE (Generalized Advantage Estimation) with configurable λ
-- [ ] Mini-batch updates over rollout buffer; configurable epochs per rollout
-- [ ] All hyperparameters in a single config file (YAML / dataclass)
+- [x] Clipped surrogate objective (`L_clip`), entropy bonus, MSE value loss
+- [x] GAE (λ-weighted) in `RolloutBuffer.compute_returns_and_advantages()`
+- [x] Mini-batch updates; `n_epochs` passes per rollout; advantage normalisation per rollout
+- [x] All hyperparameters in `configs/default.yaml`
 
 **5.2 — Rollout collection**
-- [ ] Parallel rollout workers feeding a central learner (or synchronous collect-then-learn)
-- [ ] Rollout buffer pre-allocated; no per-step allocation
-- [ ] Mixed-precision (fp16 for inference, fp32 for gradient accumulation) optional
+- [x] `Runner`: stateful synchronous collect-then-learn; `tanh(z)` sent to env, `z` stored in buffer
+- [x] `RolloutBuffer`: pre-allocated T×N tensors; no per-step allocation
+- [ ] Mixed-precision (deferred)
 
 **5.3 — Logging & metrics**
-- [ ] Weights & Biases integration (optional, off by default)
-- [ ] TensorBoard fallback always available
-- [ ] Key metrics logged every N steps: `train/reward`, `train/loss_policy`, `train/loss_value`, `train/entropy`, `train/kl`, `eval/mean_mass`, `eval/survival_time`, `eval/win_rate`
-- [ ] Histogram of action distributions logged periodically
+- [x] TensorBoard via `torch.utils.tensorboard.SummaryWriter`
+- [x] Logs per rollout: `train/reward`, `train/policy_loss`, `train/value_loss`, `train/entropy`, `train/approx_kl`, `train/clip_fraction`
+- [ ] W&B integration, action histograms (deferred)
 
 **5.4 — Checkpointing & resuming**
-- [ ] Save checkpoint every K steps: model weights, optimizer state, step count, config
-- [ ] `train.py --resume <checkpoint>` loads and continues seamlessly
-- [ ] Best-model tracking by eval win rate
+- [x] Checkpoint every `save_interval` rollouts: policy weights + optimizer state + step count
+- [x] `train.py --resume <path>` restores policy and optimizer state seamlessly
+- [ ] Best-model tracking by eval win rate (deferred to Phase 6)
 
 **5.5 — Curriculum & self-play**
-- [ ] Start with fewer/weaker opponents; ramp up difficulty as agent improves
-- [ ] Self-play pool: maintain a frozen snapshot of past policies; sample opponents from pool
-- [ ] ELO tracker for pool members
+- [ ] Self-play pool with ELO tracker (deferred)
 
 ---
 
@@ -215,14 +209,14 @@ Jadid_Halghe/
     collision.py     #   resolve_*() eating / merging functions
     spawner.py       #   spawn_food/viruses, add_player, handle_split/eject
     world.py         #   World class + GameState; step() / reset() / get_state()
-  rl/                # RL layer — Phase 3–5 (not yet implemented)
-    env.py           #   Gymnasium single-agent wrapper
-    multi_env.py     #   PettingZoo parallel wrapper
-    vec_env.py       #   Vectorized env
-    agent.py         #   Neural network policies
-    ppo.py           #   PPO algorithm
-    buffer.py        #   Rollout buffer
-    runner.py        #   Rollout collection
+  rl/                # RL layer — Phase 3–5 ✅
+    env.py           #   AgarEnv (Gymnasium) — single-agent; random-bot opponents
+    multi_env.py     #   AgarParallelEnv (PettingZoo) — all-agent RL
+    vec_env.py       #   VecAgarEnv — synchronous N-env wrapper, auto-reset
+    agent.py         #   MLPPolicy, AttentionPolicy, RecurrentPolicy; build/load helpers
+    buffer.py        #   RolloutBuffer — pre-allocated, GAE, minibatch iterator
+    ppo.py           #   PPO — clipped surrogate + value + entropy
+    runner.py        #   Runner — stateful rollout collector
   ui/                # Pygame renderer — Phase 2 ✅
     renderer.py      #   draw food/viruses/cells/ejected with culling
     camera.py        #   viewport follow, zoom, world↔screen transforms
@@ -235,9 +229,14 @@ Jadid_Halghe/
   tests/
     game/
       test_mechanics.py   # 34 tests — all passing
-  configs/           # YAML training configs (not yet implemented)
-  train.py           # Training entry point (not yet implemented)
-  eval.py            # Eval entry point (not yet implemented)
+    rl/
+      test_env.py         # 23 tests — all passing
+      test_agent.py       # 24 tests — all passing
+      test_training.py    # 12 tests — all passing
+  configs/
+    default.yaml     #   Default PPO hyperparameters (attention policy, 3 envs, 10M steps)
+  train.py           # PPO training entry point ✅ (`python train.py --config configs/default.yaml`)
+  eval.py            # Eval entry point (Phase 6, not yet implemented)
   main.py            # Human-play entry point ✅ (`python main.py --agents N`)
 ```
 
@@ -314,6 +313,9 @@ python main.py --agents 8         # 8 bots + human
 python main.py --agents 0         # solo
 python main.py --no-human         # spectate bots only
 
-# (Coming in Phase 5) Train from scratch
+# Train from scratch (Phase 5 complete)
 python train.py --config configs/default.yaml
+
+# Resume from checkpoint
+python train.py --config configs/default.yaml --resume checkpoints/run_default/ckpt_000100.pt
 ```
