@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.distributions import Normal
 
-from rl.env import K_OWN, K_FOOD, K_VIRUS, K_ENEMY, OBS_DIM
+from rl.env import K_OWN, K_FOOD, K_VIRUS, K_THREAT, K_PREY, OBS_DIM
 
 
 # ---------------------------------------------------------------------------
@@ -27,10 +27,12 @@ _FOOD_S: int = _OWN_E              # 48
 _FOOD_E: int = _FOOD_S + K_FOOD * 2   # 88
 _VIR_S: int = _FOOD_E              # 88
 _VIR_E: int = _VIR_S + K_VIRUS * 2   # 108
-_ENM_S: int = _VIR_E               # 108
-_ENM_E: int = _ENM_S + K_ENEMY * 3   # 168
-_SCL_S: int = _ENM_E               # 168
-_SCL_E: int = OBS_DIM              # 170
+_THR_S: int = _VIR_E                  # 108
+_THR_E: int = _THR_S + K_THREAT * 3   # 138
+_PRY_S: int = _THR_E                  # 138
+_PRY_E: int = _PRY_S + K_PREY * 3     # 168
+_SCL_S: int = _PRY_E                  # 168
+_SCL_E: int = OBS_DIM                 # 170
 
 LOG_STD_MIN: float = -4.0
 LOG_STD_MAX: float = 1.0
@@ -299,10 +301,11 @@ class AttentionPolicy(nn.Module):
         self.own_proj = nn.Linear(3, embed_dim)
         self.food_proj = nn.Linear(2, embed_dim)
         self.virus_proj = nn.Linear(2, embed_dim)
-        self.enemy_proj = nn.Linear(3, embed_dim)
+        self.threat_proj = nn.Linear(3, embed_dim)
+        self.prey_proj = nn.Linear(3, embed_dim)
 
-        # Learned type embeddings: 4 types × embed_dim
-        self.type_emb = nn.Parameter(torch.zeros(4, embed_dim))
+        # Learned type embeddings: 5 types × embed_dim (own, food, virus, threat, prey)
+        self.type_emb = nn.Parameter(torch.zeros(5, embed_dim))
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
@@ -347,23 +350,26 @@ class AttentionPolicy(nn.Module):
         own = obs[:, _OWN_S:_OWN_E].view(B, K_OWN, 3)
         food = obs[:, _FOOD_S:_FOOD_E].view(B, K_FOOD, 2)
         virus = obs[:, _VIR_S:_VIR_E].view(B, K_VIRUS, 2)
-        enemy = obs[:, _ENM_S:_ENM_E].view(B, K_ENEMY, 3)
+        threat = obs[:, _THR_S:_THR_E].view(B, K_THREAT, 3)
+        prey = obs[:, _PRY_S:_PRY_E].view(B, K_PREY, 3)
         scalars = obs[:, _SCL_S:_SCL_E]  # (B, 2)
 
         # Project + add type embedding (broadcasts over entity dimension)
-        own_emb = self.own_proj(own) + self.type_emb[0]    # (B, K_OWN, embed_dim)
+        own_emb = self.own_proj(own) + self.type_emb[0]      # (B, K_OWN, embed_dim)
         food_emb = self.food_proj(food) + self.type_emb[1]
         virus_emb = self.virus_proj(virus) + self.type_emb[2]
-        enemy_emb = self.enemy_proj(enemy) + self.type_emb[3]
+        threat_emb = self.threat_proj(threat) + self.type_emb[3]
+        prey_emb = self.prey_proj(prey) + self.type_emb[4]
 
-        tokens = torch.cat([own_emb, food_emb, virus_emb, enemy_emb], dim=1)  # (B, 66, embed_dim)
+        tokens = torch.cat([own_emb, food_emb, virus_emb, threat_emb, prey_emb], dim=1)  # (B, 66, embed_dim)
 
         # Padding mask: True = ignore slot (all features == 0 → padded)
-        own_real = own.abs().sum(-1) > 1e-6     # (B, K_OWN)
+        own_real = own.abs().sum(-1) > 1e-6       # (B, K_OWN)
         food_real = food.abs().sum(-1) > 1e-6
         virus_real = virus.abs().sum(-1) > 1e-6
-        enemy_real = enemy.abs().sum(-1) > 1e-6
-        is_real = torch.cat([own_real, food_real, virus_real, enemy_real], dim=1)  # (B, 66)
+        threat_real = threat.abs().sum(-1) > 1e-6
+        prey_real = prey.abs().sum(-1) > 1e-6
+        is_real = torch.cat([own_real, food_real, virus_real, threat_real, prey_real], dim=1)  # (B, 66)
         pad_mask = ~is_real  # (B, 66) — True = ignore
 
         out = self.transformer(tokens, src_key_padding_mask=pad_mask)  # (B, 66, embed_dim)
@@ -438,7 +444,7 @@ class AttentionPolicy(nn.Module):
 
         Notes
         -----
-        Token order: ``[own×16 | food×20 | virus×10 | enemy×20]``.
+        Token order: ``[own×16 | food×20 | virus×10 | threat×10 | prey×10]``.
         Use :data:`~rl.env.K_OWN`, :data:`~rl.env.K_FOOD`, etc. for boundaries.
         """
         obs_t = _to_tensor(obs, self.device)
@@ -449,20 +455,23 @@ class AttentionPolicy(nn.Module):
         own = obs_t[:, _OWN_S:_OWN_E].view(B, K_OWN, 3)
         food = obs_t[:, _FOOD_S:_FOOD_E].view(B, K_FOOD, 2)
         virus = obs_t[:, _VIR_S:_VIR_E].view(B, K_VIRUS, 2)
-        enemy = obs_t[:, _ENM_S:_ENM_E].view(B, K_ENEMY, 3)
+        threat = obs_t[:, _THR_S:_THR_E].view(B, K_THREAT, 3)
+        prey = obs_t[:, _PRY_S:_PRY_E].view(B, K_PREY, 3)
         scalars = obs_t[:, _SCL_S:_SCL_E]
 
         own_emb = self.own_proj(own) + self.type_emb[0]
         food_emb = self.food_proj(food) + self.type_emb[1]
         virus_emb = self.virus_proj(virus) + self.type_emb[2]
-        enemy_emb = self.enemy_proj(enemy) + self.type_emb[3]
-        tokens = torch.cat([own_emb, food_emb, virus_emb, enemy_emb], dim=1)
+        threat_emb = self.threat_proj(threat) + self.type_emb[3]
+        prey_emb = self.prey_proj(prey) + self.type_emb[4]
+        tokens = torch.cat([own_emb, food_emb, virus_emb, threat_emb, prey_emb], dim=1)
 
         own_real = own.abs().sum(-1) > 1e-6
         food_real = food.abs().sum(-1) > 1e-6
         virus_real = virus.abs().sum(-1) > 1e-6
-        enemy_real = enemy.abs().sum(-1) > 1e-6
-        is_real = torch.cat([own_real, food_real, virus_real, enemy_real], dim=1)
+        threat_real = threat.abs().sum(-1) > 1e-6
+        prey_real = prey.abs().sum(-1) > 1e-6
+        is_real = torch.cat([own_real, food_real, virus_real, threat_real, prey_real], dim=1)
         pad_mask = ~is_real
 
         # Step through each transformer layer manually, extracting weights

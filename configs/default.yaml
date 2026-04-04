@@ -1,10 +1,17 @@
 # Default PPO hyperparameters for Jadid_Halghe
 # Run: python train.py --config configs/default.yaml
 
+world:
+  width: 4000.0           # real agar.io is 14142 — smaller world = denser food & agent encounters
+  height: 4000.0
+  target_food_count: 600  # keeps food density proportional to full-scale default (2000 @ 14142²)
+  target_virus_count: 4
+
 env:
-  n_envs: 3          # parallel worlds
-  n_agents: 8        # RL-controlled agents per world (all learn); set to 0 to use random bots instead
-  max_ticks: 2000    # episode length before truncation (~80 s at 25 TPS)
+  n_envs: 4          # parallel worlds (was 3)
+  n_agents: 16       # RL-controlled agents per world (was 8); set to 0 to use random bots instead
+  max_ticks: 1000    # episode length before truncation (~40 s at 25 TPS; was 2000)
+  survival_bonus: 0.01  # reward per tick for staying alive; 0.01 = food_mass/start_mass
 
 policy:
   type: attention    # mlp | attention | recurrent
@@ -33,7 +40,7 @@ train:
   total_steps: 10_000_000
   log_interval: 1        # rollouts between TensorBoard log writes
   save_interval: 100     # rollouts between checkpoint saves
-  video_interval: 100    # rollouts between training videos (0 = disabled)
+  video_interval: 50     # rollouts between training videos (0 = disabled)
   video_ticks: 300       # ticks to simulate per training video
   checkpoint_dir: checkpoints/run_default
   seed: 0

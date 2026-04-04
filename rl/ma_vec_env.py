@@ -59,6 +59,8 @@ class VecAgarMAEnv:
         n_agents: int,
         config: WorldConfig | None = None,
         max_ticks: int = 2000,
+        reward_scale: float | None = None,
+        survival_bonus: float = 0.0,
     ) -> None:
         if n_envs < 1:
             raise ValueError(f"n_envs must be >= 1, got {n_envs}")
@@ -80,6 +82,8 @@ class VecAgarMAEnv:
 
         self._pos_scale = float(max(cfg.width, cfg.height)) / 2.0
         self._large_scale = float(max(cfg.width, cfg.height))
+        self._reward_scale = reward_scale if reward_scale is not None else float(cfg.start_mass)
+        self._survival_bonus = survival_bonus
 
         self.single_observation_space: spaces.Box = spaces.Box(
             -10.0, 10.0, (OBS_DIM,), dtype=np.float32
@@ -218,7 +222,10 @@ class VecAgarMAEnv:
                 self._obs_buf[flat_idx] = build_observation(
                     new_state, aid, cfg, self._pos_scale
                 )
-                self._rew_buf[flat_idx] = float(rewards[aid])
+                raw_rew = float(rewards[aid]) / self._reward_scale
+                if not dones[aid]:
+                    raw_rew += self._survival_bonus
+                self._rew_buf[flat_idx] = raw_rew
                 self._term_buf[flat_idx] = bool(dones[aid])
                 self._trunc_buf[flat_idx] = truncated
 

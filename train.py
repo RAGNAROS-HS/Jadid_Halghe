@@ -92,14 +92,18 @@ def main() -> None:
     _seed_everything(cfg.train.seed)
 
     # ── Environment ─────────────────────────────────────────────────────────
-    world_cfg = WorldConfig()
+    world_overrides = vars(cfg.world) if hasattr(cfg, "world") else {}
+    world_cfg = WorldConfig(**world_overrides)
     n_agents: int = getattr(cfg.env, "n_agents", 0)
+    survival_bonus: float = float(getattr(cfg.env, "survival_bonus", 0.0))
     if n_agents > 0:
         venv = VecAgarMAEnv(
             n_envs=cfg.env.n_envs,
             n_agents=n_agents,
             config=world_cfg,
             max_ticks=cfg.env.max_ticks,
+            reward_scale=world_cfg.start_mass,
+            survival_bonus=survival_bonus,
         )
         log.info("Multi-agent env: %d worlds × %d agents = %d streams",
                  cfg.env.n_envs, n_agents, venv.num_envs)
@@ -110,6 +114,7 @@ def main() -> None:
             config=world_cfg,
             n_bots=n_bots,
             max_ticks=cfg.env.max_ticks,
+            survival_bonus=survival_bonus,
         )
         log.info("Single-agent env: %d worlds, %d random bots each", cfg.env.n_envs, n_bots)
     obs_dim: int = venv.single_observation_space.shape[0]
@@ -245,13 +250,13 @@ def main() -> None:
 
         # ── Video ────────────────────────────────────────────────────────
         video_interval = getattr(cfg.train, "video_interval", 0)
-        if video_interval > 0 and rollout_idx % video_interval == 0:
+        if video_interval > 0 and (rollout_idx == 1 or rollout_idx % video_interval == 0):
             from rl.video import record_video
             video_n_agents = n_agents if n_agents > 0 else 1
-            video_path = ckpt_dir / f"video_{rollout_idx:06d}.gif"
+            video_path = ckpt_dir / f"video_{rollout_idx:06d}.mp4"
             video_ticks = getattr(cfg.train, "video_ticks", 300)
             try:
-                record_video(
+                saved_path = record_video(
                     policy=policy,
                     cfg=world_cfg,
                     n_agents=video_n_agents,
@@ -260,7 +265,7 @@ def main() -> None:
                     seed=cfg.train.seed,
                     device=device,
                 )
-                log.info("Saved video → %s", video_path)
+                log.info("Saved video → %s", saved_path)
             except Exception as exc:
                 log.warning("Video render failed: %s", exc)
 

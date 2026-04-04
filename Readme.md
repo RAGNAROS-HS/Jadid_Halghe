@@ -93,10 +93,11 @@ Goal: wrap the game engine in a Gymnasium-compatible interface ready for standar
 
 **3.1 — Observation space**
 - [x] Ego-centric local view: K-nearest-neighbor list centered on agent centroid
-- [x] Channels: food, friendly cells, enemy cells, viruses — relative position + log-mass features
+- [x] Channels: own cells, food, viruses, **threat enemies** (larger than self), **prey enemies** (smaller than self) — relative position + mass features
+- [x] Enemy mass encoded as `delta_log_mass = log(enemy_mass / own_total_mass + 1e-6) / 5`; positive = threat, negative = prey — no subtraction needed by the network
 - [x] Global features: own total log-mass, cell-count fraction
 - [x] Observation normalized and clipped to `[-10, 10]`; dtype `float32`; total dim = 170
-- [ ] Configurable K per channel (currently fixed: own=16, food=20, virus=10, enemy=20)
+- [ ] Configurable K per channel (currently fixed: own=16, food=20, virus=10, threat=10, prey=10)
 
 **3.2 — Action space**
 - [x] Continuous: `Box([-1,-1,-1,-1], [1,1,1,1])` — `(dx, dy)` direction + split/eject logits (thresholded at 0)
@@ -104,9 +105,9 @@ Goal: wrap the game engine in a Gymnasium-compatible interface ready for standar
 
 **3.3 — Reward function**
 - [x] Primary: `Δ(own_mass) / start_mass` per tick
-- [x] Death penalty: `-1.0` on elimination (= `-start_mass / start_mass`)
+- [x] Death penalty: `-player_mass / reward_scale` on elimination — proportional to current mass so dying is always a net loss regardless of size
+- [x] Survival bonus: `+survival_bonus` per tick alive (default `0.01 = food_mass / start_mass`); configurable via `env.survival_bonus` in YAML
 - [x] No NaN/Inf guaranteed (tested)
-- [ ] Elimination bonus, survival bonus (tunable weights — deferred to Phase 5 tuning)
 
 **3.4 — Multi-agent interface**
 - [x] `PettingZoo`-compatible `AgarParallelEnv` (all agents step simultaneously; dead agents removed from `self.agents`)
@@ -129,7 +130,7 @@ Goal: neural network policies that can efficiently process the agar.io observati
 - [x] Separate actor head (mean) + shared `log_std` parameter + critic head
 
 **4.2 — Attention-based policy (primary)**
-- [x] Per-group projections to `embed_dim=64` + learned type embeddings (4 types)
+- [x] Per-group projections to `embed_dim=64` + learned type embeddings (5 types: own, food, virus, threat, prey)
 - [x] Pre-LN TransformerEncoder (2 layers, 4 heads) over 66 entity tokens
 - [x] Zero-pad masking (real vs. padded slots detected via feature norm); safe mean pool
 - [x] Actor + critic heads on (pooled entities ‖ scalars)
@@ -274,7 +275,8 @@ Key values baked into `WorldConfig` defaults (all tunable):
 | Speed formula | `20 000 / mass^0.439` | units/sec; × dt(1/25) per tick |
 | Min split mass | 2 500 | = start mass; can split immediately |
 | Merge time | `100 + mass/50` ticks | ≈ 4 s base at 25 TPS |
-| Mass decay | disabled | `mass_decay_rate = 0` |
+| Mass decay | disabled | `mass_decay_rate = 0`; enable via `world: {mass_decay_rate: 0.002}` in YAML |
+| Survival bonus | 0.01 / tick | `= food_mass / start_mass`; configurable via `env.survival_bonus` |
 | eat_ratio | 1.1 | Need 1.21× mass to eat |
 
 ---

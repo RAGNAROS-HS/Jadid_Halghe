@@ -191,7 +191,7 @@ def _trained_bot_action(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Jadid Halghe — agar.io clone")
-    parser.add_argument("--agents", type=int, default=4,
+    parser.add_argument("--agents", type=int, default=15,
                         help="Number of random bot agents (default: 4)")
     parser.add_argument("--seed", type=int, default=42,
                         help="RNG seed (default: 42)")

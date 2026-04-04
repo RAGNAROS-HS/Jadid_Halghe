@@ -15,13 +15,14 @@ from game.world import GameState, World
 # ---------------------------------------------------------------------------
 
 #: Observation feature-group sizes.
-K_OWN: int = 16    # own cell slots   (rel_x, rel_y, log_mass_norm)
-K_FOOD: int = 20   # nearest food     (rel_x, rel_y)
-K_VIRUS: int = 10  # nearest virus    (rel_x, rel_y)
-K_ENEMY: int = 20  # nearest enemy    (rel_x, rel_y, log_mass_norm)
+K_OWN: int = 16     # own cell slots              (rel_x, rel_y, log_mass_norm)
+K_FOOD: int = 20    # nearest food                (rel_x, rel_y)
+K_VIRUS: int = 10   # nearest virus               (rel_x, rel_y)
+K_THREAT: int = 10  # nearest larger enemies      (rel_x, rel_y, delta_log_mass)
+K_PREY: int = 10    # nearest smaller enemies     (rel_x, rel_y, delta_log_mass)
 
 #: Total flat observation dimension.
-OBS_DIM: int = K_OWN * 3 + K_FOOD * 2 + K_VIRUS * 2 + K_ENEMY * 3 + 2  # 170
+OBS_DIM: int = K_OWN * 3 + K_FOOD * 2 + K_VIRUS * 2 + K_THREAT * 3 + K_PREY * 3 + 2  # 170
 
 
 # ---------------------------------------------------------------------------
@@ -66,8 +67,11 @@ def build_observation(
     * **Food** ``[K_FOOD × 2]`` — *K* nearest food pellets:
       ``(rel_x, rel_y)`` relative to centroid.
     * **Viruses** ``[K_VIRUS × 2]`` — *K* nearest viruses.
-    * **Enemy cells** ``[K_ENEMY × 3]`` — *K* nearest enemy fragments:
-      ``(rel_x, rel_y, log_mass_norm)``.
+    * **Threats** ``[K_THREAT × 3]`` — *K* nearest enemies larger than self:
+      ``(rel_x, rel_y, delta_log_mass)`` where
+      ``delta_log_mass = log(enemy_mass / own_total_mass + 1e-6) / 5 > 0``.
+    * **Prey** ``[K_PREY × 3]`` — *K* nearest enemies smaller than or equal to self:
+      ``(rel_x, rel_y, delta_log_mass)`` where ``delta_log_mass <= 0``.
     * **Scalars** ``[2]`` — ``(log_total_mass_norm, n_cells / max_cells_per_player)``.
 
     Positions are divided by *pos_scale* and clipped to ``[-10, 10]``.
@@ -127,24 +131,43 @@ def build_observation(
             (state.virus_pos[nn] - centroid) / pos_scale, -10.0, 10.0
         )
 
-    # ── Nearest enemy cells ─────────────────────────────────────────────────
+    # ── Own total mass (needed for delta encoding below) ────────────────────
+    total_mass = float(state.player_mass[player_id])
+    safe_own_mass = max(total_mass, 1.0)
+
+    # ── Nearest enemies — split into threats (larger) and prey (smaller) ────
     enemy_mask = (state.cell_owner != player_id) & (state.cell_owner >= 0)
     enemy_pos = state.cell_pos[enemy_mask]
     enemy_mass = state.cell_mass[enemy_mask]
 
-    enemy_feat = np.zeros((K_ENEMY, 3), dtype=np.float32)
+    threat_feat = np.zeros((K_THREAT, 3), dtype=np.float32)
+    prey_feat = np.zeros((K_PREY, 3), dtype=np.float32)
     if len(enemy_pos) > 0:
-        nn = _k_nearest_indices(centroid, enemy_pos, K_ENEMY)
-        n = len(nn)
-        rel = np.clip((enemy_pos[nn] - centroid) / pos_scale, -10.0, 10.0)
-        lm = np.clip(
-            np.log(enemy_mass[nn] / cfg.start_mass + 1e-6) / 5.0, -10.0, 10.0
-        )
-        enemy_feat[:n, :2] = rel
-        enemy_feat[:n, 2] = lm
+        # delta_log_mass > 0 → enemy larger (threat); <= 0 → enemy smaller (prey)
+        delta_lm_all = np.log(enemy_mass / safe_own_mass + 1e-6) / 5.0
+        is_threat = delta_lm_all > 0.0
+
+        t_pos = enemy_pos[is_threat]
+        t_mass = enemy_mass[is_threat]
+        if len(t_pos) > 0:
+            nn = _k_nearest_indices(centroid, t_pos, K_THREAT)
+            n = len(nn)
+            rel = np.clip((t_pos[nn] - centroid) / pos_scale, -10.0, 10.0)
+            dlm = np.clip(np.log(t_mass[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0)
+            threat_feat[:n, :2] = rel
+            threat_feat[:n, 2] = dlm
+
+        p_pos = enemy_pos[~is_threat]
+        p_mass = enemy_mass[~is_threat]
+        if len(p_pos) > 0:
+            nn = _k_nearest_indices(centroid, p_pos, K_PREY)
+            n = len(nn)
+            rel = np.clip((p_pos[nn] - centroid) / pos_scale, -10.0, 10.0)
+            dlm = np.clip(np.log(p_mass[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0)
+            prey_feat[:n, :2] = rel
+            prey_feat[:n, 2] = dlm
 
     # ── Scalars ─────────────────────────────────────────────────────────────
-    total_mass = float(state.player_mass[player_id])
     log_mass = float(
         np.clip(np.log(total_mass / cfg.start_mass + 1e-6) / 5.0, -10.0, 10.0)
     )
@@ -154,7 +177,8 @@ def build_observation(
         own_feat.ravel(),
         food_feat.ravel(),
         virus_feat.ravel(),
-        enemy_feat.ravel(),
+        threat_feat.ravel(),
+        prey_feat.ravel(),
         np.array([log_mass, cells_frac], dtype=np.float32),
     ])
 
@@ -187,7 +211,9 @@ class AgarEnv(gym.Env):
     Reward
     ------
     Raw world reward (mass delta from eating) divided by ``reward_scale``
-    (defaults to ``start_mass``).  Death penalty is ``-start_mass / reward_scale == -1``.
+    (defaults to ``start_mass``), plus ``survival_bonus`` each tick the
+    agent is alive.  Death penalty is proportional to the agent's current
+    mass at time of death.
 
     Parameters
     ----------
@@ -199,6 +225,9 @@ class AgarEnv(gym.Env):
         Episode length before truncation.
     reward_scale : float, optional
         Divides raw rewards.  Defaults to ``config.start_mass``.
+    survival_bonus : float
+        Added to reward each tick the agent survives.  Calibrate to
+        ``food_mass / start_mass`` (default 0.01) to match food-eating scale.
     """
 
     metadata: dict[str, Any] = {"render_modes": []}
@@ -209,6 +238,7 @@ class AgarEnv(gym.Env):
         n_bots: int = 7,
         max_ticks: int = 2000,
         reward_scale: float | None = None,
+        survival_bonus: float = 0.0,
     ) -> None:
         super().__init__()
         self.config = config or WorldConfig()
@@ -218,6 +248,7 @@ class AgarEnv(gym.Env):
         self._reward_scale = (
             reward_scale if reward_scale is not None else float(cfg.start_mass)
         )
+        self._survival_bonus = survival_bonus
         self._world = World(cfg)
         self._agent_id = 0
         self._bot_ids: list[int] = list(range(1, 1 + self.n_bots))
@@ -315,6 +346,8 @@ class AgarEnv(gym.Env):
         reward = float(raw_rewards[self._agent_id]) / self._reward_scale
         terminated = bool(raw_dones[self._agent_id])
         truncated = self._tick >= self.max_ticks
+        if not terminated:
+            reward += self._survival_bonus
 
         state = self._world.get_state()
         obs = build_observation(state, self._agent_id, self.config, self._pos_scale)

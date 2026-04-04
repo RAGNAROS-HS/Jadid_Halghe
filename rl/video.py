@@ -110,13 +110,17 @@ def render_episode_to_video(
     )
 
     suffix = path.suffix.lower()
-    if suffix == ".mp4":
-        anim.save(str(path), writer="ffmpeg", fps=fps,
-                  extra_args=["-vcodec", "libx264", "-pix_fmt", "yuv420p"])
+    if suffix == ".mp4" and animation.FFMpegWriter.isAvailable():
+        writer = animation.FFMpegWriter(
+            fps=fps, extra_args=["-vcodec", "libx264", "-pix_fmt", "yuv420p"]
+        )
+        anim.save(str(path), writer=writer)
     else:
+        path = path.with_suffix(".gif")
         anim.save(str(path), writer="pillow", fps=fps)
 
     plt.close(fig)
+    return path
 
 
 def record_video(
@@ -202,4 +206,4 @@ def record_video(
                 if dones[aid]:
                     world.add_player(aid)
 
-    render_episode_to_video(frames, cfg, path, fps=fps)
+    return render_episode_to_video(frames, cfg, path, fps=fps)
