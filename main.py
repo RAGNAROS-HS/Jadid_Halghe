@@ -258,36 +258,44 @@ def _build_attn_weights(
     return AttentionWeights(food_weight=food_weight, cell_weight=cell_weight)
 
 
-def _trained_bot_action(
-    bot_id: int,
+def _trained_bot_actions_batch(
+    bot_ids: list[int],
     state: GameState,
     policy: object,
     cfg: WorldConfig,
     pos_scale: float,
     large_scale: float,
-) -> np.ndarray:
-    """Run the trained policy for *bot_id* and return a world-space action row."""
-    mask = state.cell_owner == bot_id
-    if not mask.any():
-        return np.zeros(4, dtype=np.float32)
+    actions: np.ndarray,
+) -> None:
+    """Run the trained policy for all alive bots in one batched forward pass.
 
-    obs = build_observation(state, bot_id, cfg, pos_scale)
+    Builds observations for every bot, stacks them into a single (N, OBS_DIM)
+    tensor, calls policy.act() once, then writes world-space actions back into
+    *actions* in-place.  Much faster than N separate forward passes.
+    """
+    alive = [bid for bid in bot_ids if (state.cell_owner == bid).any()]
+    if not alive:
+        return
+
+    obs_batch = np.stack(
+        [build_observation(state, bid, cfg, pos_scale) for bid in alive]
+    )  # (N, OBS_DIM)
+
     with torch.no_grad():
-        z, _, _ = policy.act(obs, deterministic=True)
-        act = torch.tanh(z).squeeze(0).cpu().numpy().astype(np.float32)
+        z, _, _ = policy.act(obs_batch, deterministic=True)
+        acts = torch.tanh(z).cpu().numpy().astype(np.float32)  # (N, 4)
 
-    # Centroid of bot's cells
-    pos = state.cell_pos[mask]
-    mass = state.cell_mass[mask]
-    total = float(mass.sum())
-    centroid = (pos * mass[:, None]).sum(axis=0) / total if total > 0 else pos.mean(axis=0)
-
-    action = np.zeros(4, dtype=np.float32)
-    action[0] = centroid[0] + act[0] * large_scale
-    action[1] = centroid[1] + act[1] * large_scale
-    action[2] = 1.0 if act[2] > 0.0 else 0.0
-    action[3] = 1.0 if act[3] > 0.0 else 0.0
-    return action
+    for i, bid in enumerate(alive):
+        mask = state.cell_owner == bid
+        pos = state.cell_pos[mask]
+        mass = state.cell_mass[mask]
+        total = float(mass.sum())
+        centroid = (pos * mass[:, None]).sum(axis=0) / total if total > 0 else pos.mean(axis=0)
+        act = acts[i]
+        actions[bid, 0] = centroid[0] + act[0] * large_scale
+        actions[bid, 1] = centroid[1] + act[1] * large_scale
+        actions[bid, 2] = 1.0 if act[2] > 0.0 else 0.0
+        actions[bid, 3] = 1.0 if act[3] > 0.0 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -480,14 +488,14 @@ def main() -> None:
 
             while accumulator >= tick_interval:
                 # Bot actions are computed once per tick from the last known state
-                for bid in bot_ids:
-                    if bid in world._active_players:
-                        if trained_policy is not None:
-                            actions[bid] = _trained_bot_action(
-                                bid, curr_state, trained_policy, cfg,
-                                pos_scale, large_scale,
-                            )
-                        else:
+                if trained_policy is not None:
+                    _trained_bot_actions_batch(
+                        bot_ids, curr_state, trained_policy, cfg,
+                        pos_scale, large_scale, actions,
+                    )
+                else:
+                    for bid in bot_ids:
+                        if bid in world._active_players:
                             actions[bid] = _bot_action(
                                 bid, curr_state, rng, cfg, bot_dirs
                             )

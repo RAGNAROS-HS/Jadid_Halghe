@@ -143,29 +143,30 @@ def build_observation(
     threat_feat = np.zeros((K_THREAT, 3), dtype=np.float32)
     prey_feat = np.zeros((K_PREY, 3), dtype=np.float32)
     if len(enemy_pos) > 0:
-        # delta_log_mass > 0 → enemy larger (threat); <= 0 → enemy smaller (prey)
+        # Compute distances once; reuse for both threat and prey k-nearest searches.
+        dists_sq = np.sum((enemy_pos - centroid) ** 2, axis=1)
         delta_lm_all = np.log(enemy_mass / safe_own_mass + 1e-6) / 5.0
         is_threat = delta_lm_all > 0.0
 
-        t_pos = enemy_pos[is_threat]
-        t_mass = enemy_mass[is_threat]
-        if len(t_pos) > 0:
-            nn = _k_nearest_indices(centroid, t_pos, K_THREAT)
-            n = len(nn)
-            rel = np.clip((t_pos[nn] - centroid) / pos_scale, -10.0, 10.0)
-            dlm = np.clip(np.log(t_mass[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0)
-            threat_feat[:n, :2] = rel
-            threat_feat[:n, 2] = dlm
-
-        p_pos = enemy_pos[~is_threat]
-        p_mass = enemy_mass[~is_threat]
-        if len(p_pos) > 0:
-            nn = _k_nearest_indices(centroid, p_pos, K_PREY)
-            n = len(nn)
-            rel = np.clip((p_pos[nn] - centroid) / pos_scale, -10.0, 10.0)
-            dlm = np.clip(np.log(p_mass[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0)
-            prey_feat[:n, :2] = rel
-            prey_feat[:n, 2] = dlm
+        for feat, mask, k in (
+            (threat_feat, is_threat, K_THREAT),
+            (prey_feat, ~is_threat, K_PREY),
+        ):
+            ep = enemy_pos[mask]
+            em = enemy_mass[mask]
+            ed = dists_sq[mask]
+            if len(ep) == 0:
+                continue
+            n = min(k, len(ep))
+            nn = (
+                np.argpartition(ed, n - 1)[:n].astype(np.int32)
+                if n < len(ep)
+                else np.arange(len(ep), dtype=np.int32)
+            )
+            feat[:n, :2] = np.clip((ep[nn] - centroid) / pos_scale, -10.0, 10.0)
+            feat[:n, 2] = np.clip(
+                np.log(em[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0
+            )
 
     # ── Scalars ─────────────────────────────────────────────────────────────
     log_mass = float(

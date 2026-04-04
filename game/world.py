@@ -286,10 +286,11 @@ class World:
         spawn_viruses(self.viruses, self._rng, cfg)
 
         # ── 5b. Snapshot mass for next tick's death penalty ────────────
-        for pid in self._active_players:
-            p_idx = self.cells.player_indices(pid)
-            if len(p_idx) > 0:
-                self._prev_mass[pid] = float(self.cells.mass[p_idx].sum())
+        # Reuse c_idx / owners / valid from the p_cell_count pass above —
+        # one vectorised pass instead of one player_indices() scan per player.
+        if len(c_idx):
+            self._prev_mass[:] = 0.0
+            np.add.at(self._prev_mass, owners[valid], self.cells.mass[c_idx][valid])
 
         self._tick += 1
 

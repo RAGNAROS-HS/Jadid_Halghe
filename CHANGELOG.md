@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Performance
+- `game/world.py`: `_prev_mass` snapshot vectorised — replaced a Python `for` loop calling `cells.player_indices()` once per active player (O(capacity) scan each) with a single `np.add.at` mass-accumulation pass that reuses the `c_idx`/`owners`/`valid` arrays already computed in the same tick for death detection. Eliminates N linear scans per tick (N = active players).
+- `rl/ma_vec_env.py`: `_world_actions` pre-allocated in `__init__` — the `np.zeros((max_players, 4))` array previously re-allocated inside the `step()` loop on every call. Now cleared with `[:] = 0.0` in-place each iteration.
+- `rl/ma_vec_env.py`: removed `.copy()` from `step()` return values — output buffers (`_obs_buf`, `_rew_buf`, `_term_buf`, `_trunc_buf`) are now returned directly. Safe because the `Runner` consumes them via `torch.from_numpy().to(device)` and `buffer.add()` (which calls `copy_()`) before the next `step()` overwrites the buffers.
+- `rl/env.py`: `build_observation` enemy distance computation unified — squared distances to all enemy cells are now computed once, then boolean-indexed per threat/prey category for `argpartition`. Previously `_k_nearest_indices` was called twice, recomputing distances independently for each subgroup. Also removes the intermediate `t_pos`/`p_pos`/`t_mass`/`p_mass` array allocations.
+
 ### Added (Phases 7–9)
 - `rl/selfplay.py`: `OpponentPool` — ring buffer (configurable size) of past policy snapshots written to disk. `maybe_update(policy, rollout_idx, step)` saves a snapshot every `update_interval` rollouts. `sample_policy()` returns a `obs → action` callable drawn uniformly from the pool, or `None` (random walk) with probability `1 − selfplay_prob`. Policies are lazy-loaded on first use and evicted when the ring slot is overwritten. `save_state()` / `load_state()` persist pool metadata to `pool_state.json` for resume support.
 - `rl/env.py`: `AgarEnv` gains a `bot_policy: Callable | None` constructor parameter and a `set_bot_policy()` method. When set, each bot calls `build_observation()` + the policy instead of sampling a random angle; a single `world.get_state()` snapshot is taken before the bot action loop. Default (`None`) is identical to prior behaviour.
