@@ -26,6 +26,7 @@ from rl.agent import build_policy, load_policy
 from rl.ma_vec_env import VecAgarMAEnv
 from rl.ppo import PPO
 from rl.runner import Runner
+from rl.selfplay import OpponentPool
 from rl.vec_env import VecAgarEnv
 
 
@@ -186,6 +187,31 @@ def main() -> None:
     ckpt_dir = Path(cfg.train.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Self-play opponent pool (optional) ───────────────────────────────────
+    selfplay_cfg = getattr(cfg, "selfplay", None)
+    pool: OpponentPool | None = None
+    if selfplay_cfg is not None and n_agents == 0:
+        pool = OpponentPool(
+            pool_size=int(selfplay_cfg.pool_size),
+            checkpoint_dir=ckpt_dir / "selfplay",
+            update_interval=int(selfplay_cfg.update_interval),
+            selfplay_prob=float(selfplay_cfg.selfplay_prob),
+            device=device,
+        )
+        if args.resume:
+            pool.load_state()
+        log.info(
+            "Self-play pool: size=%d  update_every=%d_rollouts  prob=%.2f",
+            selfplay_cfg.pool_size,
+            selfplay_cfg.update_interval,
+            selfplay_cfg.selfplay_prob,
+        )
+    elif selfplay_cfg is not None and n_agents > 0:
+        log.warning(
+            "selfplay config present but n_agents > 0 — self-play only applies "
+            "to single-agent mode (n_agents == 0).  Pool disabled."
+        )
+
     # ── Training loop ────────────────────────────────────────────────────────
     steps_per_rollout = cfg.ppo.n_steps * cfg.env.n_envs
     total_steps = cfg.train.total_steps
@@ -202,6 +228,12 @@ def main() -> None:
     t0 = time.perf_counter()
 
     while global_step < total_steps:
+        # ── Self-play: update pool snapshot + inject opponent ────────────
+        if pool is not None:
+            pool.maybe_update(policy, rollout_idx=rollout_idx + 1, step=global_step)
+            bot_fn = pool.sample_policy()
+            venv.set_bot_policy(bot_fn)
+
         # ── Collect rollout ──────────────────────────────────────────────
         buffer, rollout_info = runner.collect()
 

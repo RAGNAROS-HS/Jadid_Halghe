@@ -1,0 +1,55 @@
+# Self-play curriculum training config for Jadid_Halghe
+# Run: python train.py --config configs/selfplay.yaml
+#
+# Trains a single RL agent (agent 0) against a pool of past policy snapshots.
+# The pool starts empty — bots use random walk until the first snapshot is saved
+# at rollout 50.  After that, ~80 % of rollouts pit the current policy against
+# a randomly sampled past version of itself.
+#
+# Use n_agents == 0 (single-agent mode) — self-play is not supported with the
+# multi-agent VecAgarMAEnv.
+
+world:
+  width: 4000.0
+  height: 4000.0
+  target_food_count: 600
+  target_virus_count: 4
+
+env:
+  n_envs: 4
+  n_agents: 0            # must be 0 for self-play
+  n_bots: 7              # opponent slots (filled by pool policies or random walk)
+  max_ticks: 1000
+  survival_bonus: 0.01
+
+policy:
+  type: attention
+  embed_dim: 64
+  n_heads: 4
+  n_layers: 2
+
+ppo:
+  n_steps: 512
+  n_epochs: 4
+  batch_size: 256
+  clip_range: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  lr: 3.0e-4
+
+train:
+  total_steps: 10_000_000
+  log_interval: 1
+  save_interval: 100
+  video_interval: 50
+  video_ticks: 300
+  checkpoint_dir: checkpoints/run_selfplay
+  seed: 0
+
+selfplay:
+  pool_size: 20           # max snapshots kept in the ring buffer
+  update_interval: 50     # rollouts between pool snapshots
+  selfplay_prob: 0.8      # fraction of rollouts using pool vs random walk

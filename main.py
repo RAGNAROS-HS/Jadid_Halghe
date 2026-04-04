@@ -9,6 +9,8 @@ Usage
     python main.py --width 1600 --height 900
     python main.py --checkpoint ckpt.pt           # bots use trained policy
     python main.py --checkpoint ckpt.pt --agents 7
+    python main.py --checkpoint ckpt.pt --attention-viz        # show attention glow
+    python main.py --checkpoint ckpt.pt --attention-viz --viz-player 1
 
 Controls
 --------
@@ -32,11 +34,11 @@ import torch
 
 from game.config import WorldConfig
 from game.world import GameState, World
-from rl.env import build_observation
+from rl.env import K_FOOD, K_OWN, K_PREY, K_THREAT, K_VIRUS, _k_nearest_indices, build_observation
 from ui.camera import Camera
 from ui.hud import HUD
 from ui.input import handle_events
-from ui.renderer import Renderer
+from ui.renderer import AttentionWeights, Renderer
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +155,109 @@ def _load_trained_bot(checkpoint: str) -> object:
     return policy
 
 
+def _build_attn_weights(
+    state: GameState,
+    viz_id: int,
+    cfg: WorldConfig,
+    pos_scale: float,
+    raw_weights: list,
+) -> AttentionWeights:
+    """Map last-layer attention weights to per-entity arrays for the renderer.
+
+    Token order in the transformer: ``[own×K_OWN | food×K_FOOD | virus×K_VIRUS
+    | threat×K_THREAT | prey×K_PREY]``.  We take the final layer's weights,
+    average over heads, and compute how much attention each token *receives*
+    (column sum of the attention matrix).  The resulting per-token scores are
+    then mapped back to world-entity indices via the same k-nearest logic used
+    in ``build_observation``.
+
+    Parameters
+    ----------
+    state : GameState
+    viz_id : int
+        Player whose observation perspective is visualised.
+    cfg : WorldConfig
+    pos_scale : float
+    raw_weights : list[np.ndarray]
+        Output of ``AttentionPolicy.attention_maps(obs)[1]``, length = n_layers.
+        Each element has shape ``(1, n_heads, n_tokens, n_tokens)``.
+
+    Returns
+    -------
+    AttentionWeights
+    """
+    import numpy as np
+
+    # Last layer weights: (1, n_heads, 66, 66) → mean over heads → (66, 66)
+    last = raw_weights[-1][0]              # (n_heads, 66, 66)
+    attn = last.mean(axis=0)               # (66, 66)
+    # Column sum: how much total attention each token receives from all queries
+    received = attn.sum(axis=0)            # (66,)
+    # Normalise to [0, 1]
+    rmax = received.max()
+    if rmax > 1e-8:
+        received = received / rmax
+
+    # Token slice boundaries
+    own_e = K_OWN
+    food_s, food_e = own_e, own_e + K_FOOD
+    vir_e = food_e + K_VIRUS
+    thr_s, thr_e = vir_e, vir_e + K_THREAT
+    pry_s, pry_e = thr_e, thr_e + K_PREY
+
+    food_token_w = received[food_s:food_e]      # (K_FOOD,)
+    threat_token_w = received[thr_s:thr_e]      # (K_THREAT,)
+    prey_token_w = received[pry_s:pry_e]        # (K_PREY,)
+
+    # Centroid of viz player
+    own_mask = state.cell_owner == viz_id
+    if own_mask.any():
+        centroid = state.cell_pos[own_mask].mean(axis=0)
+    else:
+        centroid = np.array([cfg.width / 2.0, cfg.height / 2.0], dtype=np.float32)
+
+    # ── Food weights ─────────────────────────────────────────────────────
+    n_food = len(state.food_pos)
+    food_weight = np.zeros(n_food, dtype=np.float32)
+    if n_food > 0:
+        nn = _k_nearest_indices(centroid, state.food_pos, K_FOOD)
+        for slot, world_idx in enumerate(nn):
+            food_weight[world_idx] = float(food_token_w[slot])
+
+    # ── Enemy cell weights (threats + prey) ──────────────────────────────
+    n_cells = len(state.cell_pos)
+    cell_weight = np.zeros(n_cells, dtype=np.float32)
+    total_own = float(state.player_mass[viz_id])
+    safe_own = max(total_own, 1.0)
+
+    enemy_global_mask = (state.cell_owner != viz_id) & (state.cell_owner >= 0)
+    if enemy_global_mask.any():
+        enemy_pos = state.cell_pos[enemy_global_mask]
+        enemy_mass = state.cell_mass[enemy_global_mask]
+        enemy_global_indices = np.where(enemy_global_mask)[0]
+
+        delta_lm = np.log(enemy_mass / safe_own + 1e-6) / 5.0
+        is_threat = delta_lm > 0.0
+
+        # Threats
+        t_local = np.where(is_threat)[0]
+        if len(t_local) > 0:
+            nn = _k_nearest_indices(centroid, enemy_pos[is_threat], K_THREAT)
+            for slot, local_idx in enumerate(nn):
+                global_idx = enemy_global_indices[t_local[local_idx]]
+                cell_weight[global_idx] = float(threat_token_w[slot])
+
+        # Prey
+        p_local = np.where(~is_threat)[0]
+        if len(p_local) > 0:
+            nn = _k_nearest_indices(centroid, enemy_pos[~is_threat], K_PREY)
+            for slot, local_idx in enumerate(nn):
+                global_idx = enemy_global_indices[p_local[local_idx]]
+                cell_weight[global_idx] = float(prey_token_w[slot])
+
+    return AttentionWeights(food_weight=food_weight, cell_weight=cell_weight)
+
+
 def _trained_bot_action(
     bot_id: int,
     state: GameState,
@@ -205,14 +310,21 @@ def main() -> None:
                         help="Simulation ticks per second (default: 25)")
     parser.add_argument("--no-human", action="store_true",
                         help="Spectator mode: all players are bots")
+    parser.add_argument("--spectate", action="store_true",
+                        help="Watch the whole field at once — implies --no-human, camera fixed to show entire world")
     parser.add_argument("--checkpoint", metavar="PATH", default=None,
                         help="Policy checkpoint — bots use the trained agent instead of the random heuristic")
+    parser.add_argument("--attention-viz", action="store_true",
+                        help="Overlay attention weights as glow halos (requires --checkpoint with AttentionPolicy)")
+    parser.add_argument("--viz-player", type=int, default=-1,
+                        help="Player ID whose attention to visualise (-1 = first bot, default: -1)")
     args = parser.parse_args()
 
     # ── Config ────────────────────────────────────────────────────────────
     n_bots = args.agents
-    has_human = not args.no_human
-    human_id = 0
+    spectate = args.spectate
+    has_human = not args.no_human and not spectate
+    human_id = 0 if has_human else -1
     n_players = n_bots + (1 if has_human else 0)
     if n_players == 0:
         print("Need at least one player (--agents > 0 or omit --no-human).")
@@ -228,10 +340,21 @@ def main() -> None:
     trained_policy = None
     pos_scale = float(max(cfg.width, cfg.height)) / 2.0
     large_scale = float(max(cfg.width, cfg.height))
+    attention_viz = args.attention_viz
     if args.checkpoint is not None:
         print(f"Loading checkpoint: {args.checkpoint}")
         trained_policy = _load_trained_bot(args.checkpoint)
         print("Trained policy loaded — bots will use it.")
+        if attention_viz:
+            from rl.agent import AttentionPolicy
+            if not isinstance(trained_policy, AttentionPolicy):
+                print("Warning: --attention-viz requires AttentionPolicy; overlay disabled.")
+                attention_viz = False
+            else:
+                print("Attention visualization enabled.")
+    elif attention_viz:
+        print("Warning: --attention-viz has no effect without --checkpoint; disabled.")
+        attention_viz = False
 
     # ── World setup ────────────────────────────────────────────────────────
     world = World(cfg)
@@ -243,7 +366,8 @@ def main() -> None:
         bot_ids = list(range(1, n_bots + 1))
     else:
         bot_ids = list(range(n_bots))
-        human_id = bot_ids[0] if bot_ids else 0
+        if not spectate:
+            human_id = bot_ids[0] if bot_ids else -1
 
     for bid in bot_ids:
         world.add_player(bid)
@@ -266,6 +390,8 @@ def main() -> None:
     clock = pygame.time.Clock()
 
     camera = Camera(args.width, args.height, cfg.width, cfg.height)
+    if spectate:
+        camera.zoom = min(args.width / cfg.width, args.height / cfg.height)
     renderer = Renderer(screen)
     hud = HUD(screen, cfg.width, cfg.height)
 
@@ -284,6 +410,19 @@ def main() -> None:
             c = init_state.cell_pos[pmask].mean(axis=0)
             actions[pid, 0] = float(c[0])
             actions[pid, 1] = float(c[1])
+
+    # ── Attention viz: pick which player to watch ─────────────────────────
+    viz_id: int = -1
+    if attention_viz:
+        if args.viz_player >= 0:
+            viz_id = args.viz_player
+        elif bot_ids:
+            viz_id = bot_ids[0]
+        else:
+            print("Warning: no bot IDs for attention viz; disabled.")
+            attention_viz = False
+
+    attn_cache: AttentionWeights | None = None
 
     prev_state: GameState | None = None
     curr_state = world.get_state()
@@ -358,6 +497,16 @@ def main() -> None:
                 rewards, dones, _info = world.step(actions)
                 curr_state = world.get_state()
 
+                # Attention weights — computed once per tick, cached for all render frames
+                if attention_viz and viz_id in world._active_players:
+                    obs_viz = build_observation(curr_state, viz_id, cfg, pos_scale)
+                    _, raw_w = trained_policy.attention_maps(obs_viz)  # type: ignore[union-attr]
+                    attn_cache = _build_attn_weights(
+                        curr_state, viz_id, cfg, pos_scale, raw_w
+                    )
+                elif attention_viz:
+                    attn_cache = None
+
                 # Clear one-shot flags AFTER the tick has consumed them
                 actions[human_id, 2] = 0.0
                 actions[human_id, 3] = 0.0
@@ -388,7 +537,7 @@ def main() -> None:
         render_state = _interp_state(prev_state, curr_state, alpha)
 
         # ── Camera ────────────────────────────────────────────────────────
-        if len(render_state.cell_pos) > 0:
+        if not spectate and len(render_state.cell_pos) > 0:
             camera.update(
                 render_state.cell_pos,
                 render_state.cell_mass,
@@ -397,7 +546,7 @@ def main() -> None:
             )
 
         # ── Render ────────────────────────────────────────────────────────
-        renderer.draw(render_state, camera, human_id)
+        renderer.draw(render_state, camera, human_id, attention=attn_cache)
         hud.draw(curr_state, camera, clock.get_fps(), human_id, player_names)
 
         if paused:

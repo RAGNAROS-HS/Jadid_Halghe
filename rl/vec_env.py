@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Callable
+
 import numpy as np
 from gymnasium import spaces
 
@@ -140,6 +142,20 @@ class VecAgarEnv:
             self._trunc_buf.copy(),
             infos,
         )
+
+    def set_bot_policy(
+        self,
+        policy: Callable[[np.ndarray], np.ndarray] | None,
+    ) -> None:
+        """Propagate a new bot policy to all underlying :class:`AgarEnv` instances.
+
+        Parameters
+        ----------
+        policy : Callable[[np.ndarray], np.ndarray] | None
+            New bot policy, or ``None`` to revert to the random-walk baseline.
+        """
+        for env in self._envs:
+            env.set_bot_policy(policy)
 
     def close(self) -> None:
         """No-op (no external resources to release)."""

@@ -173,7 +173,9 @@ Goal: stable, reproducible RL training with clean logging and checkpointing.
 - [ ] Best-model tracking by eval win rate (deferred to Phase 6)
 
 **5.5 — Curriculum & self-play**
-- [ ] Self-play pool with ELO tracker (deferred)
+- [x] `OpponentPool` ring buffer in `rl/selfplay.py` — saves snapshots every N rollouts, samples past policies as bot opponents
+- [x] `AgarEnv.set_bot_policy()` / `VecAgarEnv.set_bot_policy()` — hot-swap opponents between rollouts without env reconstruction
+- [x] `configs/selfplay.yaml` — dedicated self-play config; `train.py --config configs/selfplay.yaml`
 
 ---
 
@@ -190,10 +192,12 @@ Goal: understand what the agent learned and how well it generalizes.
 - [x] Replay system: save episode trajectories to disk; replay via Pygame UI
 - [x] Attention weight overlay: `AttentionPolicy.attention_maps(obs)` returns per-head weights
 - [x] Mass-over-time plot per episode (matplotlib)
+- [x] Live attention glow in `main.py --attention-viz`: per-entity halo sized by attention received (food + enemy cells)
 
 **6.3 — Ablations & baselines**
 - [x] `RandomPolicy` baseline (uniform random actions)
 - [x] `GreedyPolicy` heuristic (chase edible enemies → food → flee threats)
+- [x] Elo rating (`eval/elo.py`): round-robin tournament across checkpoint history; `eval.py --elo`
 - [ ] DQN baseline (using discrete action space)
 - [ ] Comparison table in docs
 
@@ -210,25 +214,27 @@ Jadid_Halghe/
     collision.py     #   resolve_*() eating / merging functions
     spawner.py       #   spawn_food/viruses, add_player, handle_split/eject
     world.py         #   World class + GameState; step() / reset() / get_state()
-  rl/                # RL layer — Phase 3–5 ✅
-    env.py           #   AgarEnv (Gymnasium) — single-agent; random-bot opponents
+  rl/                # RL layer — Phase 3–5, 7 ✅
+    env.py           #   AgarEnv (Gymnasium) — single-agent; bot_policy param for self-play
     multi_env.py     #   AgarParallelEnv (PettingZoo) — all-agent RL
-    vec_env.py       #   VecAgarEnv — synchronous N-env wrapper, auto-reset
+    vec_env.py       #   VecAgarEnv — synchronous N-env wrapper; set_bot_policy()
     ma_vec_env.py    #   VecAgarMAEnv — N worlds × M RL agents, shared policy
-    agent.py         #   MLPPolicy, AttentionPolicy, RecurrentPolicy; build/load helpers
+    agent.py         #   MLPPolicy, AttentionPolicy (+ attention_maps()), RecurrentPolicy
     buffer.py        #   RolloutBuffer — pre-allocated, GAE, minibatch iterator
     ppo.py           #   PPO — clipped surrogate + value + entropy
     runner.py        #   Runner — stateful rollout collector
+    selfplay.py      #   OpponentPool — ring buffer of past snapshots; sample_policy()
     video.py         #   render_episode_to_video(), record_video() — headless GIF/MP4
   ui/                # Pygame renderer — Phase 2 ✅
-    renderer.py      #   draw food/viruses/cells/ejected with culling
+    renderer.py      #   Renderer.draw() — food/viruses/cells/ejected + attention glow overlay
     camera.py        #   viewport follow, zoom, world↔screen transforms
     hud.py           #   leaderboard, FPS counter, minimap
     input.py         #   mouse direction, Space/W/P keys
-  eval/              # Evaluation & replay — Phase 6 ✅
+  eval/              # Evaluation & replay — Phase 6, 8 ✅
     harness.py       #   Harness — run N eval episodes, compute EvalResult
     replay.py        #   ReplayEpisode, save/load, Pygame playback, mass plot
     baselines.py     #   RandomPolicy, GreedyPolicy
+    elo.py           #   EloRating, run_tournament() — round-robin Elo across checkpoints
   tests/
     game/
       test_mechanics.py   # 34 tests — all passing
@@ -239,10 +245,11 @@ Jadid_Halghe/
     eval/
       test_eval.py        # 34 tests — all passing
   configs/
-    default.yaml     #   Default PPO hyperparameters (attention policy, 3 envs, 10M steps)
-  train.py           # PPO training entry point ✅ (`python train.py --config configs/default.yaml`)
-  eval.py            # Eval entry point ✅ (`python eval.py --checkpoint <path>`)
-  main.py            # Human-play entry point ✅ (`python main.py --agents N`)
+    default.yaml     #   Standard PPO training (selfplay section commented out)
+    selfplay.yaml    #   Self-play curriculum training
+  train.py           # PPO training entry point ✅
+  eval.py            # Eval + Elo tournament entry point ✅
+  main.py            # Human-play + attention viz entry point ✅
 ```
 
 ---
@@ -324,8 +331,15 @@ python main.py --checkpoint checkpoints/run_default/ckpt_000100.pt
 python main.py --checkpoint ckpt.pt --agents 7
 python main.py --checkpoint ckpt.pt --no-human   # spectate trained agents
 
-# Train — all 8 agents learn simultaneously (multi-agent, default config)
+# Watch bots with attention glow overlay (AttentionPolicy only)
+python main.py --checkpoint ckpt.pt --attention-viz
+python main.py --checkpoint ckpt.pt --attention-viz --viz-player 2
+
+# Train — all agents learn simultaneously (multi-agent, default config)
 python train.py --config configs/default.yaml
+
+# Train with self-play curriculum (bots = past policy snapshots)
+python train.py --config configs/selfplay.yaml
 
 # Resume from checkpoint
 python train.py --config configs/default.yaml --resume checkpoints/run_default/ckpt_000100.pt
@@ -336,6 +350,10 @@ python train.py --config configs/default.yaml --device cuda
 # Evaluate a checkpoint
 python eval.py --checkpoint checkpoints/run_default/ckpt_000100.pt --episodes 20
 python eval.py --checkpoint ckpt.pt --opponents greedy --save-replay replays/ep.pkl --plot
+
+# Elo tournament across all training checkpoints
+python eval.py --elo --checkpoint-dir checkpoints/run_default --episodes 20
+python eval.py --elo --checkpoint-dir checkpoints/run_default --episodes 50 --elo-output elo.json
 
 # Replay a saved episode
 python eval.py --replay replays/ep.pkl

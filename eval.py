@@ -6,6 +6,7 @@ Usage examples::
     python eval.py --checkpoint ckpt.pt --opponents greedy --episodes 50
     python eval.py --checkpoint ckpt.pt --save-replay replays/ep.pkl --plot
     python eval.py --replay replays/ep.pkl
+    python eval.py --elo --checkpoint-dir checkpoints/run_default --episodes 20
 """
 
 from __future__ import annotations
@@ -84,6 +85,44 @@ def _parse_args() -> argparse.Namespace:
         help="Write evaluation summary to this text file.",
     )
 
+    # Elo tournament mode
+    elo_grp = p.add_argument_group("Elo tournament")
+    elo_grp.add_argument(
+        "--elo",
+        action="store_true",
+        help="Run a round-robin Elo tournament across all checkpoints in --checkpoint-dir.",
+    )
+    elo_grp.add_argument(
+        "--checkpoint-dir",
+        metavar="DIR",
+        help="Directory of checkpoints for Elo tournament.",
+    )
+    elo_grp.add_argument(
+        "--ckpt-glob",
+        default="ckpt_[0-9]*.pt",
+        metavar="GLOB",
+        help="Glob pattern to select checkpoints (default: ckpt_[0-9]*.pt).",
+    )
+    elo_grp.add_argument(
+        "--elo-output",
+        metavar="PATH",
+        default=None,
+        help="Save Elo results to JSON (default: <checkpoint-dir>/elo_results.json).",
+    )
+    elo_grp.add_argument(
+        "--elo-bots",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Extra random-bot bystanders per Elo game (default: 0 = pure 1v1).",
+    )
+    elo_grp.add_argument(
+        "--k-factor",
+        type=float,
+        default=32.0,
+        help="Elo K-factor (default: 32).",
+    )
+
     # Replay mode
     rep_grp = p.add_argument_group("Replay")
     rep_grp.add_argument(
@@ -108,8 +147,48 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """CLI entry point for evaluation and replay."""
+    """CLI entry point for evaluation, Elo tournament, and replay."""
     args = _parse_args()
+
+    # ── Elo tournament mode ──────────────────────────────────────────────────
+    if args.elo:
+        if args.checkpoint_dir is None:
+            print("error: --checkpoint-dir is required with --elo.", file=sys.stderr)
+            sys.exit(1)
+
+        import json
+        import torch
+        from eval.elo import run_tournament
+
+        ckpt_dir = Path(args.checkpoint_dir)
+        paths = sorted(ckpt_dir.glob(args.ckpt_glob))
+        if len(paths) < 2:
+            print(
+                f"error: found {len(paths)} checkpoint(s) matching "
+                f"'{args.ckpt_glob}' in {ckpt_dir} — need at least 2.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        print(f"Elo tournament: {len(paths)} checkpoints, "
+              f"{args.episodes} episodes/pair, {args.elo_bots} extra bots")
+        device = torch.device(args.device)
+        elo = run_tournament(
+            checkpoint_paths=paths,
+            episodes_per_pair=args.episodes,
+            n_bots=args.elo_bots,
+            max_ticks=args.max_ticks,
+            device=device,
+            k_factor=args.k_factor,
+            seed=args.seed,
+        )
+
+        print("\n" + elo.table_str())
+
+        out_path = Path(args.elo_output) if args.elo_output else ckpt_dir / "elo_results.json"
+        out_path.write_text(json.dumps(elo.to_dict(), indent=2), encoding="utf-8")
+        print(f"\nElo results saved → {out_path}")
+        return
 
     # ── Replay mode ──────────────────────────────────────────────────────────
     if args.replay is not None:

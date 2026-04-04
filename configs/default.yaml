@@ -44,3 +44,9 @@ train:
   video_ticks: 300       # ticks to simulate per training video
   checkpoint_dir: checkpoints/run_default
   seed: 0
+
+# Self-play opponent pool (uncomment to enable — only works when n_agents == 0)
+# selfplay:
+#   pool_size: 20           # max snapshots kept in the ring buffer
+#   update_interval: 50     # rollouts between pool snapshots
+#   selfplay_prob: 0.8      # fraction of rollouts using pool vs random walk

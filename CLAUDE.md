@@ -6,22 +6,28 @@
 
 - **Phase 1** ✅ — Game engine: fast, local, accurate agar.io clone. Human-playable alongside trained agents.
 - **Phase 2** ✅ — Pygame UI: renderer, camera, HUD, human + agent mixed sessions.
-- **Phase 3** — RL environment: Gymnasium + PettingZoo wrappers, observation/action spaces, reward function, VecEnv.
-- **Phase 4** — Agent architecture: MLP baseline, attention-based primary policy, recurrent option.
-- **Phase 5** — Training: PPO, rollout collection, logging, checkpointing, self-play curriculum.
-- **Phase 6** — Evaluation: harness, replay, baselines, ablations.
+- **Phase 3** ✅ — RL environment: Gymnasium + PettingZoo wrappers, observation/action spaces, reward function, VecEnv.
+- **Phase 4** ✅ — Agent architecture: MLP baseline, attention-based primary policy, recurrent option.
+- **Phase 5** ✅ — Training: PPO, rollout collection, logging, checkpointing, self-play curriculum.
+- **Phase 6** ✅ — Evaluation: harness, replay, baselines, ablations.
+- **Phase 7** ✅ — Self-play curriculum: `OpponentPool` ring buffer, policy-driven bots in `AgarEnv`, `configs/selfplay.yaml`.
+- **Phase 8** ✅ — Elo rating: `eval/elo.py`, round-robin `run_tournament()`, `eval.py --elo` CLI.
+- **Phase 9** ✅ — Attention overlay: glow halos on food/enemy cells driven by `AttentionPolicy.attention_maps()`, `main.py --attention-viz`.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `pip install -r requirements.txt` | Install dependencies |
-| `pytest` | Run all tests (34 tests, ~0.4 s) |
+| `pytest` | Run all tests |
 | `ruff check .` | Lint |
 | `ruff format .` | Format |
 | `python main.py` | Human play: `--agents N --seed N --width N --height N --fps N --tps N --no-human` |
-| `python train.py --config configs/default.yaml` | Start RL training — Phase 5 (not yet implemented) |
-| `python eval.py --checkpoint <path>` | Evaluate a checkpoint — Phase 6 (not yet implemented) |
+| `python main.py --checkpoint <path> --attention-viz` | Watch trained bots with attention glow overlay |
+| `python train.py --config configs/default.yaml` | Standard PPO training |
+| `python train.py --config configs/selfplay.yaml` | Self-play curriculum training |
+| `python eval.py --checkpoint <path>` | Evaluate a checkpoint |
+| `python eval.py --elo --checkpoint-dir <dir> --episodes 20` | Round-robin Elo tournament |
 
 **Python version note:** Two Python installs exist on this machine. Use `C:/Users/Hugo/AppData/Local/Programs/Python/Python312/python.exe` (3.12) — packages are installed there. Python 3.13 at the default `python` path is missing most deps.
 
@@ -39,23 +45,28 @@ Jadid_Halghe/
     spawner.py       #   spawn_food/viruses, add_player, handle_split/eject,
                      #   resolve_virus_feeding(), apply_virus_splits()
     world.py         #   World class + GameState dataclass
-  rl/                # RL layer (Phase 3–5, not yet implemented)
-    env.py           #   Gymnasium single-agent wrapper
+  rl/                # RL layer ✅
+    env.py           #   AgarEnv — Gymnasium single-agent wrapper; bot_policy param for self-play
     multi_env.py     #   PettingZoo parallel wrapper
-    vec_env.py       #   Vectorized env
-    agent.py         #   Neural network policies
+    vec_env.py       #   VecAgarEnv — vectorized env; set_bot_policy() for self-play injection
+    agent.py         #   MLPPolicy, AttentionPolicy (+ attention_maps()), RecurrentPolicy
     ppo.py           #   PPO algorithm
     buffer.py        #   Rollout buffer
     runner.py        #   Rollout collection
+    selfplay.py      #   OpponentPool — ring-buffer of past snapshots; sample_policy()
   ui/                # Pygame renderer ✅
     camera.py        #   Camera — centroid follow, zoom, world↔screen, visible_mask()
     input.py         #   handle_events() → (action[4], quit, paused)
-    renderer.py      #   Renderer.draw() — grid, food, viruses, ejected, cells
+    renderer.py      #   Renderer.draw() — grid, food, viruses, ejected, cells, attention glow
     hud.py           #   HUD.draw() — leaderboard, FPS, minimap
-  eval/              # Evaluation & replay (Phase 6, not yet implemented)
-    harness.py
-    replay.py
-    baselines.py
+  eval/              # Evaluation & replay ✅
+    harness.py       #   Harness — N-episode eval runner; EpisodeResult, EvalResult
+    replay.py        #   save/load/replay_with_ui/plot_mass_over_time
+    baselines.py     #   RandomPolicy, GreedyPolicy
+    elo.py           #   EloRating, run_tournament() — round-robin Elo across checkpoints
+  configs/
+    default.yaml     #   Standard PPO training (selfplay section commented out)
+    selfplay.yaml    #   Self-play curriculum training
   tests/
     game/
       test_mechanics.py   # 34 unit tests — all passing
@@ -161,3 +172,9 @@ Use `/pr` to auto-generate a PR with summary, test plan, and performance notes.
 - **Tick/render loops are decoupled.** `main.py` uses a fixed-timestep accumulator (`accumulator += frame_dt; while accumulator >= tick_interval: step(); accumulator -= tick_interval`). Do not couple them — rendering should never block the game tick or vice versa.
 - **`Camera.visible_mask()` uses world radii, not screen radii.** Pass world-unit radii (e.g. `np.sqrt(mass)`) — the method scales internally. Never pass pixel radii.
 - **`Renderer._draw_cells()` sorts by mass (smallest first).** This gives the correct agar.io visual layering: large cells appear on top of small ones. Changing the sort order breaks the intended look.
+- **`OpponentPool` self-play only works in single-agent mode (`n_agents == 0`).** `VecAgarMAEnv` has no `set_bot_policy()` — all agents in that env are RL-controlled. `train.py` logs a warning and disables the pool if `n_agents > 0` while `selfplay` config is present.
+- **`OpponentPool` policies are lazily loaded and cached.** The first call to `sample_policy()` for a given ring slot loads the checkpoint from disk. When the ring wraps and a slot is overwritten, the old policy object is replaced (GC collects it). Do not hold references to sampled callables across multiple rollouts.
+- **`AgarEnv` with `bot_policy` calls `world.get_state()` before the bot action loop.** This extra state fetch is needed so bots can call `build_observation()`. It is O(n_cells) but negligible vs. the physics tick. In pure random-walk mode (`bot_policy=None`) the fetch is skipped.
+- **`AttentionWeights.food_weight` / `cell_weight` length must match `len(state.food_pos)` / `len(state.cell_pos)`.** The renderer checks this before indexing; a length mismatch (e.g. entities spawned between tick and render frame) causes the overlay to be silently skipped for that frame.
+- **`_build_attn_weights` in `main.py` re-runs `_k_nearest_indices` to map observation tokens back to world entity indices.** This duplicates work from `build_observation` but is only called once per tick (25 Hz) and is cheap relative to network inference. It must stay in sync with `build_observation`'s k-nearest selection logic.
+- **Attention inference (`attention_maps`) must only run inside the simulation tick loop**, not the render loop. `attn_cache` in `main.py` is written once per tick and read unchanged at 60 Hz by the renderer. Never move the inference call into the render path.

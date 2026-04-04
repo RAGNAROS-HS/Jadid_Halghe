@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import gymnasium as gym
@@ -228,6 +228,11 @@ class AgarEnv(gym.Env):
     survival_bonus : float
         Added to reward each tick the agent survives.  Calibrate to
         ``food_mass / start_mass`` (default 0.01) to match food-eating scale.
+    bot_policy : Callable[[np.ndarray], np.ndarray] | None, optional
+        If provided, each bot's action is produced by calling
+        ``bot_policy(obs)`` instead of the random-walk heuristic.
+        Swap it between rollouts via :meth:`set_bot_policy` without
+        reconstructing the environment.
     """
 
     metadata: dict[str, Any] = {"render_modes": []}
@@ -239,6 +244,7 @@ class AgarEnv(gym.Env):
         max_ticks: int = 2000,
         reward_scale: float | None = None,
         survival_bonus: float = 0.0,
+        bot_policy: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> None:
         super().__init__()
         self.config = config or WorldConfig()
@@ -254,6 +260,7 @@ class AgarEnv(gym.Env):
         self._bot_ids: list[int] = list(range(1, 1 + self.n_bots))
         self._tick: int = 0
         self._pos_scale: float = max(cfg.width, cfg.height) / 2.0
+        self._bot_policy: Callable[[np.ndarray], np.ndarray] | None = bot_policy
 
         obs_bound = np.full(OBS_DIM, 10.0, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_bound, obs_bound, dtype=np.float32)
@@ -326,14 +333,27 @@ class AgarEnv(gym.Env):
         world_actions[self._agent_id, 2] = 1.0 if action[2] > 0.0 else 0.0
         world_actions[self._agent_id, 3] = 1.0 if action[3] > 0.0 else 0.0
 
-        # Bots: random direction each tick
-        rng = self._world._rng
-        for bid in self._bot_ids:
-            if bid in self._world._active_players:
-                angle = float(rng.uniform(0.0, 2.0 * np.pi))
-                bc = self._centroid(bid)
-                world_actions[bid, 0] = bc[0] + np.cos(angle) * large_scale
-                world_actions[bid, 1] = bc[1] + np.sin(angle) * large_scale
+        # Bots: policy-driven or random direction each tick
+        if self._bot_policy is not None:
+            # Fetch state once so all bots can build observations from the same snapshot.
+            bot_state = self._world.get_state()
+            for bid in self._bot_ids:
+                if bid in self._world._active_players:
+                    obs_b = build_observation(bot_state, bid, self.config, self._pos_scale)
+                    act_b = self._bot_policy(obs_b)
+                    bc = self._centroid(bid)
+                    world_actions[bid, 0] = bc[0] + float(act_b[0]) * large_scale
+                    world_actions[bid, 1] = bc[1] + float(act_b[1]) * large_scale
+                    world_actions[bid, 2] = 1.0 if act_b[2] > 0.0 else 0.0
+                    world_actions[bid, 3] = 1.0 if act_b[3] > 0.0 else 0.0
+        else:
+            rng = self._world._rng
+            for bid in self._bot_ids:
+                if bid in self._world._active_players:
+                    angle = float(rng.uniform(0.0, 2.0 * np.pi))
+                    bc = self._centroid(bid)
+                    world_actions[bid, 0] = bc[0] + np.cos(angle) * large_scale
+                    world_actions[bid, 1] = bc[1] + np.sin(angle) * large_scale
 
         raw_rewards, raw_dones, info = self._world.step(world_actions)
 
@@ -352,6 +372,19 @@ class AgarEnv(gym.Env):
         state = self._world.get_state()
         obs = build_observation(state, self._agent_id, self.config, self._pos_scale)
         return obs, reward, terminated, truncated, info
+
+    def set_bot_policy(
+        self,
+        policy: Callable[[np.ndarray], np.ndarray] | None,
+    ) -> None:
+        """Replace the bot policy without reconstructing the environment.
+
+        Parameters
+        ----------
+        policy : Callable[[np.ndarray], np.ndarray] | None
+            New bot policy, or ``None`` to revert to the random-walk baseline.
+        """
+        self._bot_policy = policy
 
     # ------------------------------------------------------------------
     # Internal helpers
