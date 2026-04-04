@@ -124,10 +124,9 @@ class RolloutBuffer:
 
         Notes
         -----
-        ``done`` is treated as ``terminated | truncated``.  For truncated
-        episodes the bootstrap is slightly underestimated (the reset obs
-        value is used instead of the true terminal obs value), but in
-        practice with long episodes (≥ 2 000 ticks) this bias is negligible.
+        ``done`` is treated as ``terminated | truncated``.  When ``done[t]``
+        is True the bootstrap is zeroed out, so the value of the next
+        observation (respawned or reset) does not contaminate the advantage.
         """
         T = self.n_steps
         last_gae = torch.zeros(self.n_envs, device=self.device)
@@ -139,7 +138,7 @@ class RolloutBuffer:
                 not_done = not_done_last
             else:
                 next_value = self.values[t + 1]
-                not_done = (~self.dones[t + 1]).float()
+                not_done = (~self.dones[t]).float()
 
             delta = self.rewards[t] + gamma * not_done * next_value - self.values[t]
             last_gae = delta + gamma * gae_lambda * not_done * last_gae

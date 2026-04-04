@@ -98,7 +98,10 @@ class WorldConfig:
     max_cells_per_player: int = 16
     merge_time_base: float = 100.0         # ticks (= 4 s at 25 TPS)
     merge_time_mass_factor: float = 50.0   # adds mass/50 ticks to merge time
-    mass_decay_rate: float = 0.0           # disabled — no passive mass loss
+    mass_decay_rate: float = 0.0           # disabled — set to e.g. 0.002 to enable
+    # (0.002 ≈ 0.2 %/tick = ~5 %/s at 25 TPS for cells above mass_decay_threshold)
+    # Creates pressure to keep eating to maintain size; enable via configs/default.yaml
+    # by adding: world: { mass_decay_rate: 0.002 }
     mass_decay_threshold: float = 10_000.0
 
     # ── Physics ────────────────────────────────────────────────────────────

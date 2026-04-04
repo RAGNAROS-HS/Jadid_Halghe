@@ -8,11 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `rl/buffer.py`: GAE off-by-one in `compute_returns_and_advantages()` — inner steps used `~dones[t+1]` as the `not_done` mask instead of `~dones[t]`. When an agent died at step t and respawned before the step returned, `dones[t+1]` was always False, so the bootstrap was never zeroed and the GAE accumulation never reset at the episode boundary. Now uses `~dones[t]`: δ_t = r_t − V(s_t) on death, and advantage carry-over is correctly cut at every episode boundary.
+- `rl/video.py`: fixed `extra_args` passed via `anim.save()` string shorthand — `extra_args` is only valid on `FFMpegWriter` instances, not the string dispatcher. Writer is now constructed explicitly as `FFMpegWriter(fps, extra_args=[...])`.
+- `rl/video.py`: video render no longer raises when ffmpeg is not installed — falls back to Pillow and saves as `.gif` instead of `.mp4`. `render_episode_to_video()` now returns the actual path written so callers can log the correct filename.
+
+### Changed
+- `train.py`: training video is now also recorded after the very first rollout (`rollout_idx == 1`), in addition to every `video_interval` rollouts thereafter. Log line updated to show the actual saved path (`.gif` vs `.mp4` depending on ffmpeg availability).
+
 ### Added
+- `rl/env.py`: `survival_bonus` parameter on `AgarEnv` — added to reward each tick the agent is alive.  Default `0.0`; set to `0.01` (`food_mass / start_mass`) in `configs/default.yaml` to give a dense gradient toward staying alive before death ever occurs.
+- `rl/ma_vec_env.py`: `survival_bonus` parameter on `VecAgarMAEnv` — same behaviour as `AgarEnv`.  Threaded through `train.py` from `env.survival_bonus` in YAML.
+- `configs/default.yaml`: `env.survival_bonus: 0.01`.
+
+### Changed
+- `rl/env.py`: enemy observation encoding replaced.  Former `K_ENEMY=20` single group (absolute `log_mass_norm`) split into `K_THREAT=10` (enemies larger than self) + `K_PREY=10` (enemies smaller than self).  Mass feature changed to `delta_log_mass = log(enemy_mass / own_total_mass + 1e-6) / 5` — positive for threats, negative for prey — so the network never needs to subtract two distant features to classify an enemy.  `OBS_DIM` remains 170.
+- `rl/agent.py` (`AttentionPolicy`): `enemy_proj` replaced with `threat_proj` + `prey_proj`; `type_emb` expanded from 4 to 5 types (own, food, virus, threat, prey).  Token count stays 66.  **Existing checkpoints are incompatible — retrain from scratch.**
+- `eval/baselines.py` (`GreedyPolicy`): updated to use threat/prey slot indices; removed redundant own-mass subtraction (slot assignment encodes threat vs. prey directly).
+- `game/world.py`: death penalty changed from fixed `-start_mass` to `-prev_mass[pid]` (the player's actual mass at time of death).  A mass-tracking update loop now snapshots each surviving player's mass at the end of every tick.  This makes dying proportionally costly regardless of how much the agent has grown.
+- `configs/default.yaml`: `video_interval` halved from 100 to 50 rollouts (2× more frequent training videos); training videos now saved as `.mp4` instead of `.gif`.
+- `configs/default.yaml`: `n_agents` increased from 8 to 16; `n_envs` increased from 3 to 4.
+
+### Added (prior unreleased)
 - `rl/ma_vec_env.py`: `VecAgarMAEnv` — vectorised multi-agent env with N worlds × M RL-controlled agents all sharing a single policy.  Each `(world, agent)` pair is an independent stream; Runner/buffer/PPO require no changes.  Agents auto-respawn on death; worlds reset on `max_ticks`.
 - `rl/video.py`: `render_episode_to_video()` — headless matplotlib renderer that converts a list of `GameState` frames to a GIF or MP4.  `record_video()` — runs a short episode with the current policy and saves it; called automatically during training.
-- `train.py`: multi-agent training mode — when `env.n_agents > 0` (default: 8), uses `VecAgarMAEnv` instead of `VecAgarEnv`; all agents learn simultaneously via shared-weight PPO.  Saves a training video every `video_interval` rollouts.
-- `configs/default.yaml`: replaced `n_bots` with `n_agents: 8`; added `video_interval: 100` and `video_ticks: 300`.
+- `train.py`: multi-agent training mode — when `env.n_agents > 0`, uses `VecAgarMAEnv` instead of `VecAgarEnv`; all agents learn simultaneously via shared-weight PPO.  Saves a training video every `video_interval` rollouts.
 - `main.py`: `--checkpoint PATH` flag — bots use a trained policy loaded from a checkpoint instead of the random heuristic.  Bot names on the leaderboard change from "Bot N" to "Agent N" when a checkpoint is active.
 
 ---

@@ -215,7 +215,7 @@ class World:
             Per-player reward:
 
             * ``+Δmass`` from eating food or cells.
-            * ``−start_mass`` on death (eliminated this tick).
+            * ``−player_mass`` on death: proportional to the player's mass this tick.
         dones : ndarray, shape (max_players,), bool
             True for players that died this tick.
         info : dict
@@ -275,7 +275,7 @@ class World:
         for pid in list(self._active_players):
             if p_cell_count[pid] == 0:
                 dones[pid] = True
-                rewards[pid] -= cfg.start_mass  # death penalty
+                rewards[pid] -= self._prev_mass[pid]  # death penalty ∝ current mass
                 dead_players.append(pid)
 
         for pid in dead_players:
@@ -284,6 +284,12 @@ class World:
         # ── 5. Spawning maintenance ────────────────────────────────────
         spawn_food(self.food, self._rng, cfg)
         spawn_viruses(self.viruses, self._rng, cfg)
+
+        # ── 5b. Snapshot mass for next tick's death penalty ────────────
+        for pid in self._active_players:
+            p_idx = self.cells.player_indices(pid)
+            if len(p_idx) > 0:
+                self._prev_mass[pid] = float(self.cells.mass[p_idx].sum())
 
         self._tick += 1
 
