@@ -184,6 +184,141 @@ def build_observation(
     ])
 
 
+def build_observation_batch(
+    state: GameState,
+    player_ids: list[int],
+    cfg: WorldConfig,
+    pos_scale: float,
+    out: np.ndarray | None = None,
+) -> np.ndarray:
+    """Build observation vectors for *B* agents from a single :class:`GameState`.
+
+    More efficient than calling :func:`build_observation` in a loop: shared
+    arrays (food positions, virus positions, cell arrays) are accessed once and
+    the output is written directly into a pre-allocated buffer, avoiding per-
+    agent ``np.zeros`` + ``np.concatenate`` allocations.
+
+    Parameters
+    ----------
+    state : GameState
+        Current world snapshot.
+    player_ids : list[int]
+        Agent IDs to build observations for, in order.
+    cfg : WorldConfig
+        Simulation configuration.
+    pos_scale : float
+        Position normalisation denominator (``max(width, height) / 2``).
+    out : ndarray, shape (B, OBS_DIM), float32, optional
+        Pre-allocated output buffer.  Allocated internally if not provided.
+
+    Returns
+    -------
+    ndarray, shape (len(player_ids), OBS_DIM), float32
+    """
+    B = len(player_ids)
+    if out is None:
+        out = np.zeros((B, OBS_DIM), dtype=np.float32)
+    else:
+        out[:] = 0.0
+
+    # Hoist shared arrays — accessed once, reused across all agents.
+    cell_owner = state.cell_owner
+    cell_pos = state.cell_pos
+    cell_mass = state.cell_mass
+    food_pos = state.food_pos
+    virus_pos = state.virus_pos
+    player_mass = state.player_mass
+    n_food = len(food_pos)
+    n_virus = len(virus_pos)
+
+    # Flat-vector segment boundaries (must match OBS_DIM layout above).
+    s_food = K_OWN * 3
+    s_virus = s_food + K_FOOD * 2
+    s_threat = s_virus + K_VIRUS * 2
+    s_prey = s_threat + K_THREAT * 3
+    s_scalar = s_prey + K_PREY * 3
+
+    for i, pid in enumerate(player_ids):
+        own_mask = cell_owner == pid
+        own_pos = cell_pos[own_mask]
+        own_mass_arr = cell_mass[own_mask]
+
+        if len(own_pos) > 0:
+            centroid = own_pos.mean(axis=0)
+        else:
+            centroid = np.array([cfg.width / 2.0, cfg.height / 2.0], dtype=np.float32)
+
+        # Own cells — write directly into pre-allocated output slice.
+        if len(own_pos) > 0:
+            order = np.argsort(own_mass_arr)[::-1][:K_OWN]
+            n = len(order)
+            rel = np.clip((own_pos[order] - centroid) / pos_scale, -10.0, 10.0)
+            lm = np.clip(
+                np.log(own_mass_arr[order] / cfg.start_mass + 1e-6) / 5.0, -10.0, 10.0
+            )
+            own_block = out[i, :s_food].reshape(K_OWN, 3)
+            own_block[:n, :2] = rel
+            own_block[:n, 2] = lm
+
+        # Food
+        if n_food > 0:
+            nn = _k_nearest_indices(centroid, food_pos, K_FOOD)
+            food_block = out[i, s_food:s_virus].reshape(K_FOOD, 2)
+            food_block[:len(nn)] = np.clip(
+                (food_pos[nn] - centroid) / pos_scale, -10.0, 10.0
+            )
+
+        # Viruses
+        if n_virus > 0:
+            nn = _k_nearest_indices(centroid, virus_pos, K_VIRUS)
+            virus_block = out[i, s_virus:s_threat].reshape(K_VIRUS, 2)
+            virus_block[:len(nn)] = np.clip(
+                (virus_pos[nn] - centroid) / pos_scale, -10.0, 10.0
+            )
+
+        # Threats & prey
+        total_mass = float(player_mass[pid])
+        safe_own_mass = max(total_mass, 1.0)
+        enemy_mask = (cell_owner != pid) & (cell_owner >= 0)
+        enemy_pos = cell_pos[enemy_mask]
+        enemy_mass_arr = cell_mass[enemy_mask]
+
+        if len(enemy_pos) > 0:
+            dists_sq = np.sum((enemy_pos - centroid) ** 2, axis=1)
+            delta_lm_all = np.log(enemy_mass_arr / safe_own_mass + 1e-6) / 5.0
+            is_threat = delta_lm_all > 0.0
+
+            for s_start, s_end, mask, k in (
+                (s_threat, s_prey, is_threat, K_THREAT),
+                (s_prey, s_scalar, ~is_threat, K_PREY),
+            ):
+                ep = enemy_pos[mask]
+                em = enemy_mass_arr[mask]
+                ed = dists_sq[mask]
+                if len(ep) == 0:
+                    continue
+                n = min(k, len(ep))
+                nn = (
+                    np.argpartition(ed, n - 1)[:n].astype(np.int32)
+                    if n < len(ep)
+                    else np.arange(len(ep), dtype=np.int32)
+                )
+                block = out[i, s_start:s_end].reshape(k, 3)
+                block[:n, :2] = np.clip((ep[nn] - centroid) / pos_scale, -10.0, 10.0)
+                block[:n, 2] = np.clip(
+                    np.log(em[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0
+                )
+
+        # Scalars
+        log_mass = float(
+            np.clip(np.log(total_mass / cfg.start_mass + 1e-6) / 5.0, -10.0, 10.0)
+        )
+        out[i, s_scalar] = log_mass
+        out[i, s_scalar + 1] = float(own_mask.sum()) / cfg.max_cells_per_player
+
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Single-agent Gymnasium environment
 # ---------------------------------------------------------------------------

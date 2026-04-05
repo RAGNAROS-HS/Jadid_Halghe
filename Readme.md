@@ -244,8 +244,9 @@ Jadid_Halghe/
       test_training.py    # 12 tests — all passing
     eval/
       test_eval.py        # 34 tests — all passing
+                          # 127 total
   configs/
-    default.yaml     #   Standard PPO training (selfplay section commented out)
+    default.yaml     #   Standard PPO training: 1 world × 32 agents, 2000×2000 map, batch_size=2048
     selfplay.yaml    #   Self-play curriculum training
   train.py           # PPO training entry point ✅
   eval.py            # Eval + Elo tournament entry point ✅

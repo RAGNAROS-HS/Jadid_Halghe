@@ -6,7 +6,7 @@ from gymnasium import spaces
 from game.config import WorldConfig
 from game.world import GameState, World
 from rl.agent import ACT_DIM
-from rl.env import OBS_DIM, build_observation
+from rl.env import OBS_DIM, build_observation, build_observation_batch
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +97,8 @@ class VecAgarMAEnv:
         self._term_buf = np.zeros(self.num_envs, dtype=bool)
         self._trunc_buf = np.zeros(self.num_envs, dtype=bool)
         self._world_actions = np.zeros((cfg.max_players, 4), dtype=np.float32)
+        # Scratch buffer for batch observation building (one row per agent per world).
+        self._obs_scratch = np.zeros((n_agents, OBS_DIM), dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -114,12 +116,12 @@ class VecAgarMAEnv:
 
     def _fill_obs(self, env_idx: int) -> None:
         state = self._states[env_idx]
-        cfg = self.config
-        for agent_idx, aid in enumerate(self._agent_ids):
-            flat_idx = env_idx * self.n_agents + agent_idx
-            self._obs_buf[flat_idx] = build_observation(
-                state, aid, cfg, self._pos_scale
-            )
+        base = env_idx * self.n_agents
+        build_observation_batch(
+            state, self._agent_ids, self.config, self._pos_scale,
+            out=self._obs_scratch,
+        )
+        self._obs_buf[base : base + self.n_agents] = self._obs_scratch
 
     # ------------------------------------------------------------------
     # VecEnv API
@@ -207,22 +209,27 @@ class VecAgarMAEnv:
             new_state = world.get_state()
 
             if truncated:
-                for agent_idx, aid in enumerate(self._agent_ids):
-                    flat_idx = env_idx * self.n_agents + agent_idx
-                    infos[flat_idx]["final_observation"] = build_observation(
-                        new_state, aid, cfg, self._pos_scale
-                    )
+                # Batch-build terminal observations into scratch, then copy to infos.
+                build_observation_batch(
+                    new_state, self._agent_ids, cfg, self._pos_scale,
+                    out=self._obs_scratch,
+                )
+                base = env_idx * self.n_agents
+                for agent_idx in range(self.n_agents):
+                    infos[base + agent_idx]["final_observation"] = self._obs_scratch[agent_idx].copy()
                 self._reset_world(env_idx)
                 new_state = self._states[env_idx]
             else:
                 self._states[env_idx] = new_state
 
             # ── Fill output buffers ────────────────────────────────────
+            base = env_idx * self.n_agents
+            build_observation_batch(
+                new_state, self._agent_ids, cfg, self._pos_scale,
+                out=self._obs_buf[base : base + self.n_agents],
+            )
             for agent_idx, aid in enumerate(self._agent_ids):
-                flat_idx = env_idx * self.n_agents + agent_idx
-                self._obs_buf[flat_idx] = build_observation(
-                    new_state, aid, cfg, self._pos_scale
-                )
+                flat_idx = base + agent_idx
                 raw_rew = float(rewards[aid]) / self._reward_scale
                 if not dones[aid]:
                     raw_rew += self._survival_bonus

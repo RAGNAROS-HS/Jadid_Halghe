@@ -8,7 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- `configs/default.yaml`: training world shrunk from 4000×4000 to **2000×2000**; `target_food_count` 600→200, `target_virus_count` 4→2. Smaller arena means ~4× more agent encounters per tick, producing denser reward signal.
+- `configs/default.yaml`: switched from 4 parallel worlds to **1 world × 32 agents** (`n_envs: 1`, `n_agents: 32`, `world.max_players: 32`). All 32 RL agents now compete in one visible world; CPU game-sim overhead drops proportionally.
+- `configs/default.yaml`: episode length increased from 1000 to **1500 ticks** (~60 s at 25 TPS) to allow full mass-growth arcs before world reset.
+- `configs/default.yaml`: PPO minibatch size raised from 256 to **2048**, `n_steps` 512→2048, `n_epochs` 4→8. Total transitions per rollout: 65 536. Larger minibatches improve GPU utilisation during the PPO update phase.
+
 ### Performance
+- `rl/env.py`: `build_observation_batch()` — new vectorised helper builds observations for all agents in a world in a single call. Shared arrays (`cell_owner`, `cell_pos`, `cell_mass`, `food_pos`, `virus_pos`) are accessed once and results are written directly into a pre-allocated `(B, OBS_DIM)` output buffer, eliminating per-agent `np.zeros` + `np.concatenate` allocations. Produces bit-identical output to the scalar loop.
+- `rl/ma_vec_env.py`: `_fill_obs()`, the step output loop, and the truncation final-obs block all replaced with `build_observation_batch()` calls. Added a pre-allocated `_obs_scratch` buffer so the terminal-obs path avoids heap allocation. Reduces per-step Python overhead from O(n_agents) function calls to 1–2 NumPy calls.
+
+### Added (prior unreleased)
 - `game/world.py`: `_prev_mass` snapshot vectorised — replaced a Python `for` loop calling `cells.player_indices()` once per active player (O(capacity) scan each) with a single `np.add.at` mass-accumulation pass that reuses the `c_idx`/`owners`/`valid` arrays already computed in the same tick for death detection. Eliminates N linear scans per tick (N = active players).
 - `rl/ma_vec_env.py`: `_world_actions` pre-allocated in `__init__` — the `np.zeros((max_players, 4))` array previously re-allocated inside the `step()` loop on every call. Now cleared with `[:] = 0.0` in-place each iteration.
 - `rl/ma_vec_env.py`: removed `.copy()` from `step()` return values — output buffers (`_obs_buf`, `_rew_buf`, `_term_buf`, `_trunc_buf`) are now returned directly. Safe because the `Runner` consumes them via `torch.from_numpy().to(device)` and `buffer.add()` (which calls `copy_()`) before the next `step()` overwrites the buffers.
