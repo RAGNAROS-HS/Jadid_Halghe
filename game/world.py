@@ -85,7 +85,7 @@ class World:
     >>> world.add_player(1)
     >>> actions = np.zeros((cfg.max_players, 4), dtype=np.float32)
     >>> actions[0] = [1.0, 0.0, 0.0, 0.0]   # player 0 moves right
-    >>> state, rewards, dones, info = world.step(actions)
+    >>> rewards, dones, info = world.step(actions)
 
     Parameters
     ----------
@@ -326,11 +326,12 @@ class World:
 
         player_alive = np.zeros(cfg.max_players, dtype=bool)
         player_mass = np.zeros(cfg.max_players, dtype=np.float32)
-        for pid in self._active_players:
-            p_idx = self.cells.player_indices(pid)
-            if len(p_idx) > 0:
-                player_alive[pid] = True
-                player_mass[pid] = float(self.cells.mass[p_idx].sum())
+        if len(c_idx) > 0:
+            owners = self.cells.owner[c_idx]
+            valid = (owners >= 0) & (owners < cfg.max_players)
+            valid_owners = owners[valid]
+            np.add.at(player_mass, valid_owners, self.cells.mass[c_idx[valid]])
+            player_alive[valid_owners] = True
 
         return GameState(
             tick=self._tick,

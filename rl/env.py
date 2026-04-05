@@ -405,6 +405,8 @@ class AgarEnv(gym.Env):
             high=np.full(4, 1.0, dtype=np.float32),
             dtype=np.float32,
         )
+        self._world_actions = np.zeros((cfg.max_players, 4), dtype=np.float32)
+        self._bot_obs_buf = np.zeros((self.n_bots, OBS_DIM), dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -459,7 +461,8 @@ class AgarEnv(gym.Env):
         info : dict
         """
         cfg = self.config
-        world_actions = np.zeros((cfg.max_players, 4), dtype=np.float32)
+        world_actions = self._world_actions
+        world_actions[:] = 0.0
         large_scale = float(max(cfg.width, cfg.height))
 
         # Agent: convert direction to world-space target
@@ -470,26 +473,28 @@ class AgarEnv(gym.Env):
         world_actions[self._agent_id, 3] = 1.0 if action[3] > 0.0 else 0.0
 
         # Bots: policy-driven or random direction each tick
-        if self._bot_policy is not None:
-            # Fetch state once so all bots can build observations from the same snapshot.
+        active_bots = [bid for bid in self._bot_ids if bid in self._world._active_players]
+        if self._bot_policy is not None and active_bots:
+            # Build all bot observations in one batched call then apply policy per bot.
             bot_state = self._world.get_state()
-            for bid in self._bot_ids:
-                if bid in self._world._active_players:
-                    obs_b = build_observation(bot_state, bid, self.config, self._pos_scale)
-                    act_b = self._bot_policy(obs_b)
-                    bc = self._centroid(bid)
-                    world_actions[bid, 0] = bc[0] + float(act_b[0]) * large_scale
-                    world_actions[bid, 1] = bc[1] + float(act_b[1]) * large_scale
-                    world_actions[bid, 2] = 1.0 if act_b[2] > 0.0 else 0.0
-                    world_actions[bid, 3] = 1.0 if act_b[3] > 0.0 else 0.0
-        else:
+            build_observation_batch(
+                bot_state, active_bots, self.config, self._pos_scale,
+                out=self._bot_obs_buf[: len(active_bots)],
+            )
+            for k, bid in enumerate(active_bots):
+                act_b = self._bot_policy(self._bot_obs_buf[k])
+                bc = self._centroid(bid)
+                world_actions[bid, 0] = bc[0] + float(act_b[0]) * large_scale
+                world_actions[bid, 1] = bc[1] + float(act_b[1]) * large_scale
+                world_actions[bid, 2] = 1.0 if act_b[2] > 0.0 else 0.0
+                world_actions[bid, 3] = 1.0 if act_b[3] > 0.0 else 0.0
+        elif active_bots:
             rng = self._world._rng
-            for bid in self._bot_ids:
-                if bid in self._world._active_players:
-                    angle = float(rng.uniform(0.0, 2.0 * np.pi))
-                    bc = self._centroid(bid)
-                    world_actions[bid, 0] = bc[0] + np.cos(angle) * large_scale
-                    world_actions[bid, 1] = bc[1] + np.sin(angle) * large_scale
+            angles = rng.uniform(0.0, 2.0 * np.pi, size=len(active_bots))
+            for k, bid in enumerate(active_bots):
+                bc = self._centroid(bid)
+                world_actions[bid, 0] = bc[0] + np.cos(angles[k]) * large_scale
+                world_actions[bid, 1] = bc[1] + np.sin(angles[k]) * large_scale
 
         raw_rewards, raw_dones, info = self._world.step(world_actions)
 

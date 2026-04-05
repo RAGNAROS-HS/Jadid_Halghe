@@ -6,7 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+add graphing/data collection. Average survival time of blobs, average size, number of kills, biggest blob per generation etc
+
 ## [Unreleased]
+
+### Fixed
+- `game/world.py` docstring: example in `World` class docstring unpacked 4 values from `world.step()` which returns 3 (`rewards, dones, info`). Would raise `ValueError` if copied verbatim.
+- `eval/elo.py`: progress counter formula `i * (n - 1 - i // 2) + (j - i)` produced incorrect pair numbers (e.g. pair 5 shown twice for n=4). Corrected to `i*(n-1) - i*(i-1)//2 + (j-i)`.
+
+### Performance
+- `game/world.py`: `get_state()` replaced per-player `player_indices()` calls (O(n_players × capacity) scan) with a single vectorised pass over the alive cell index array — same `c_idx`/`owners`/`valid` arrays already available in the function. Eliminates N linear scans per `get_state()` call; called every tick during training and evaluation.
+- `rl/env.py`: `_world_actions` and `_bot_obs_buf` pre-allocated in `__init__`; `step()` zeroes them in-place with `[:] = 0.0` instead of allocating a new array each call.
+- `rl/env.py`: bot observations in `step()` now built with `build_observation_batch()` in a single call instead of per-bot `build_observation()` inside a Python loop. Eliminates per-bot `np.zeros` + `np.concatenate` allocations when a `bot_policy` is active.
+- `rl/env.py`: random bot movement angles now sampled with a single `rng.uniform(..., size=n)` batch call instead of one `rng.uniform()` call per bot in a loop.
+- `eval/harness.py`: `world_actions` array moved outside the episode and tick loops; zeroed in-place each tick. Eliminates one `np.zeros((max_players, 4))` allocation per simulation tick during evaluation.
+- `rl/buffer.py`: `compute_returns_and_advantages()` GAE loop now copies rollout tensors to CPU before the sequential backward pass. Avoids launching ~`n_steps` (up to 2048) tiny CUDA kernels when training on GPU; loop runs on CPU then results are copied back via `copy_()`.
+- `rl/selfplay.py`: `sample_policy()` now caches the `obs → action` closure in the ring slot alongside the policy at load time. Subsequent calls to the same slot return the cached callable directly instead of constructing a new closure object each rollout.
 
 ### Changed
 - `configs/default.yaml`: training world shrunk from 4000×4000 to **2000×2000**; `target_food_count` 600→200, `target_virus_count` 4→2. Smaller arena means ~4× more agent encounters per tick, producing denser reward signal.

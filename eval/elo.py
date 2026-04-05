@@ -184,7 +184,7 @@ def run_tournament(
         for j in range(i + 1, n):
             path_a, label_a = paths[i], labels[i]
             path_b, label_b = paths[j], labels[j]
-            print(f"  [{i * (n - 1 - i // 2) + (j - i):>3}/{total_pairs}]"
+            print(f"  [{i * (n - 1) - i * (i - 1) // 2 + (j - i):>3}/{total_pairs}]"
                   f"  {label_a}  vs  {label_b}")
 
             for direction, (ep, op, el, ol) in enumerate([

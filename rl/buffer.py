@@ -129,21 +129,32 @@ class RolloutBuffer:
         observation (respawned or reset) does not contaminate the advantage.
         """
         T = self.n_steps
-        last_gae = torch.zeros(self.n_envs, device=self.device)
-        not_done_last = (~last_dones).float()
+        # Run the sequential GAE recurrence on CPU regardless of training device.
+        # This avoids launching ~T tiny CUDA kernels when device is a GPU.
+        cpu = torch.device("cpu")
+        rewards = self.rewards.to(cpu)
+        values = self.values.to(cpu)
+        dones = self.dones.to(cpu)
+        last_val = last_values.to(cpu)
+        last_don = last_dones.to(cpu)
+
+        advantages_cpu = torch.zeros(T, self.n_envs)
+        last_gae = torch.zeros(self.n_envs)
+        not_done_last = (~last_don).float()
 
         for t in reversed(range(T)):
             if t == T - 1:
-                next_value = last_values
+                next_value = last_val
                 not_done = not_done_last
             else:
-                next_value = self.values[t + 1]
-                not_done = (~self.dones[t]).float()
+                next_value = values[t + 1]
+                not_done = (~dones[t]).float()
 
-            delta = self.rewards[t] + gamma * not_done * next_value - self.values[t]
+            delta = rewards[t] + gamma * not_done * next_value - values[t]
             last_gae = delta + gamma * gae_lambda * not_done * last_gae
-            self.advantages[t] = last_gae
+            advantages_cpu[t] = last_gae
 
+        self.advantages.copy_(advantages_cpu)
         self.returns = self.advantages + self.values
 
     def get_batches(

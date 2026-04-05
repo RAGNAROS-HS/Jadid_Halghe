@@ -213,6 +213,7 @@ class Harness:
         world = World(cfg)
         ep_results: list[EpisodeResult] = []
         replays: list[list[GameState]] = []
+        world_actions = np.zeros((cfg.max_players, 4), dtype=np.float32)
 
         for ep in range(n_episodes):
             world.reset(seed=seed + ep)
@@ -232,9 +233,7 @@ class Harness:
                 if record:
                     frames.append(state)
 
-                world_actions = np.zeros(
-                    (cfg.max_players, 4), dtype=np.float32
-                )
+                world_actions[:] = 0.0
 
                 # Eval agent
                 if self._eval_pid in world._active_players:

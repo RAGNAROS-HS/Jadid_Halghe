@@ -128,23 +128,21 @@ class OpponentPool:
             return None
 
         idx = int(self._rng.integers(len(self._ring)))
-        path, loaded = self._ring[idx]
-        if loaded is None:
+        path, cached_fn = self._ring[idx]
+        if cached_fn is None:
             from rl.agent import load_policy
             pol, _ = load_policy(path)  # type: ignore[arg-type]
             pol = pol.to(self._device).eval()
-            self._ring[idx][1] = pol
-            loaded = pol
 
-        policy = loaded
-        device = self._device
+            def _fn(obs: np.ndarray, _pol: object = pol) -> np.ndarray:
+                with torch.no_grad():
+                    z, _, _ = _pol.act(obs, deterministic=True)  # type: ignore[union-attr]
+                    return torch.tanh(z).squeeze(0).cpu().numpy().astype(np.float32)
 
-        def _fn(obs: np.ndarray) -> np.ndarray:
-            with torch.no_grad():
-                z, _, _ = policy.act(obs, deterministic=True)  # type: ignore[union-attr]
-                return torch.tanh(z).squeeze(0).cpu().numpy().astype(np.float32)
+            self._ring[idx][1] = _fn
+            cached_fn = _fn
 
-        return _fn
+        return cached_fn
 
     # ------------------------------------------------------------------
     # Persistence (resume support)
