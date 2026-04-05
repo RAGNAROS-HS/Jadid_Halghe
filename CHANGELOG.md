@@ -8,7 +8,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Fixed
+### Changed
+- `configs/default.yaml`: training world shrunk from 4000×4000 to **2000×2000**; `target_food_count` 600→200, `target_virus_count` 4→2. Smaller arena means ~4× more agent encounters per tick, producing denser reward signal.
+- `configs/default.yaml`: switched from 4 parallel worlds to **1 world × 32 agents** (`n_envs: 1`, `n_agents: 32`, `world.max_players: 32`). All 32 RL agents now compete in one visible world; CPU game-sim overhead drops proportionally.
+- `configs/default.yaml`: episode length increased from 1000 to **1500 ticks** (~60 s at 25 TPS) to allow full mass-growth arcs before world reset.
+- `configs/default.yaml`: PPO minibatch size raised from 256 to **2048**, `n_steps` 512→2048, `n_epochs` 4→8. Total transitions per rollout: 65 536. Larger minibatches improve GPU utilisation during the PPO update phase.
+
+### Performance
+- `rl/env.py`: `build_observation_batch()` — new vectorised helper builds observations for all agents in a world in a single call. Shared arrays (`cell_owner`, `cell_pos`, `cell_mass`, `food_pos`, `virus_pos`) are accessed once and results are written directly into a pre-allocated `(B, OBS_DIM)` output buffer, eliminating per-agent `np.zeros` + `np.concatenate` allocations. Produces bit-identical output to the scalar loop.
+- `rl/ma_vec_env.py`: `_fill_obs()`, the step output loop, and the truncation final-obs block all replaced with `build_observation_batch()` calls. Added a pre-allocated `_obs_scratch` buffer so the terminal-obs path avoids heap allocation. Reduces per-step Python overhead from O(n_agents) function calls to 1–2 NumPy calls.
+
+### Added (prior unreleased)
+- `game/world.py`: `_prev_mass` snapshot vectorised — replaced a Python `for` loop calling `cells.player_indices()` once per active player (O(capacity) scan each) with a single `np.add.at` mass-accumulation pass that reuses the `c_idx`/`owners`/`valid` arrays already computed in the same tick for death detection. Eliminates N linear scans per tick (N = active players).
+- `rl/ma_vec_env.py`: `_world_actions` pre-allocated in `__init__` — the `np.zeros((max_players, 4))` array previously re-allocated inside the `step()` loop on every call. Now cleared with `[:] = 0.0` in-place each iteration.
+- `rl/ma_vec_env.py`: removed `.copy()` from `step()` return values — output buffers (`_obs_buf`, `_rew_buf`, `_term_buf`, `_trunc_buf`) are now returned directly. Safe because the `Runner` consumes them via `torch.from_numpy().to(device)` and `buffer.add()` (which calls `copy_()`) before the next `step()` overwrites the buffers.
+- `rl/env.py`: `build_observation` enemy distance computation unified — squared distances to all enemy cells are now computed once, then boolean-indexed per threat/prey category for `argpartition`. Previously `_k_nearest_indices` was called twice, recomputing distances independently for each subgroup. Also removes the intermediate `t_pos`/`p_pos`/`t_mass`/`p_mass` array allocations.
+
+### Added (Phases 7–9)
+- `rl/selfplay.py`: `OpponentPool` — ring buffer (configurable size) of past policy snapshots written to disk. `maybe_update(policy, rollout_idx, step)` saves a snapshot every `update_interval` rollouts. `sample_policy()` returns a `obs → action` callable drawn uniformly from the pool, or `None` (random walk) with probability `1 − selfplay_prob`. Policies are lazy-loaded on first use and evicted when the ring slot is overwritten. `save_state()` / `load_state()` persist pool metadata to `pool_state.json` for resume support.
+- `rl/env.py`: `AgarEnv` gains a `bot_policy: Callable | None` constructor parameter and a `set_bot_policy()` method. When set, each bot calls `build_observation()` + the policy instead of sampling a random angle; a single `world.get_state()` snapshot is taken before the bot action loop. Default (`None`) is identical to prior behaviour.
+- `rl/vec_env.py`: `VecAgarEnv.set_bot_policy()` propagates a new bot policy to all underlying `AgarEnv` instances.
+- `train.py`: reads optional `selfplay:` YAML section (`pool_size`, `update_interval`, `selfplay_prob`). When present and `n_agents == 0`, instantiates `OpponentPool` and calls `pool.maybe_update()` + `venv.set_bot_policy()` before each rollout. Logs a warning and disables the pool if `n_agents > 0`.
+- `configs/selfplay.yaml`: dedicated self-play training config (`n_agents=0`, `n_bots=7`, selfplay pool enabled).
+- `configs/default.yaml`: `selfplay` section added as commented-out template.
+- `eval/elo.py`: `EloRating` class — standard Elo with configurable K-factor (default 32) and initial rating (default 1000). `record_result(label_a, label_b, score_a)` updates both ratings after one game. `table_str()` returns a formatted ranked table. `to_dict()` / `from_dict()` for JSON serialisation. `run_tournament(checkpoint_paths, ...)` — round-robin across all checkpoint pairs; each unordered pair plays in both directions to cancel home-field advantage; score per episode is rank-based (rank 1 → 1.0, tie → 0.5, last → 0.0); policies loaded and deleted pair-by-pair to bound memory use.
+- `eval.py`: `--elo` mode — `--checkpoint-dir <dir>` globs checkpoints matching `--ckpt-glob` (default `ckpt_[0-9]*.pt`), runs `run_tournament()`, prints ranked table, saves `elo_results.json`. Additional flags: `--elo-output`, `--elo-bots`, `--k-factor`.
+- `ui/renderer.py`: `AttentionWeights` dataclass — `food_weight: ndarray` (length = food count) and `cell_weight: ndarray` (length = cell count) for per-entity attention scores. `Renderer.draw()` accepts an optional `attention: AttentionWeights` parameter. `_draw_food()` and `_draw_cells()` draw a semi-transparent glow halo before each entity fill when `attention` is set; halo radius scales as `r × (1 + scale × weight)`. `_draw_glow()` helper renders a `SRCALPHA` circle onto the display surface.
+- `main.py`: `--attention-viz` flag enables attention overlay (requires `--checkpoint` with an `AttentionPolicy`; silently disabled otherwise). `--viz-player N` selects which bot's perspective to visualise (default: first bot). `_build_attn_weights()` helper — takes last-layer attention weights from `attention_maps()`, averages over heads, column-sums to get "attention received" per token, normalises to [0, 1], then maps food/threat/prey token slots back to world entity indices via the same k-nearest logic used in `build_observation()`. Computed once per simulation tick (25 Hz) and cached as `attn_cache` for all render frames until the next tick.
+
+---
+
+### Fixed (prior unreleased)
 - `rl/buffer.py`: GAE off-by-one in `compute_returns_and_advantages()` — inner steps used `~dones[t+1]` as the `not_done` mask instead of `~dones[t]`. When an agent died at step t and respawned before the step returned, `dones[t+1]` was always False, so the bootstrap was never zeroed and the GAE accumulation never reset at the episode boundary. Now uses `~dones[t]`: δ_t = r_t − V(s_t) on death, and advantage carry-over is correctly cut at every episode boundary.
 - `rl/video.py`: fixed `extra_args` passed via `anim.save()` string shorthand — `extra_args` is only valid on `FFMpegWriter` instances, not the string dispatcher. Writer is now constructed explicitly as `FFMpegWriter(fps, extra_args=[...])`.
 - `rl/video.py`: video render no longer raises when ffmpeg is not installed — falls back to Pillow and saves as `.gif` instead of `.mp4`. `render_episode_to_video()` now returns the actual path written so callers can log the correct filename.

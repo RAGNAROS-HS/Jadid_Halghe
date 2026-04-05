@@ -3,12 +3,38 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import pygame
 import numpy as np
 
 from game.world import GameState
 from ui.camera import Camera
+
+
+# ---------------------------------------------------------------------------
+# Attention weight overlay
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AttentionWeights:
+    """Per-entity attention weights for the glow overlay.
+
+    Both arrays have the same length as the corresponding sub-arrays of the
+    current :class:`~game.world.GameState`.  Entries are ``0.0`` for entities
+    that were not included in the observed k-nearest tokens.
+
+    Parameters
+    ----------
+    food_weight : ndarray, shape (n_food,)
+        Normalised attention score for each food pellet in ``state.food_pos``.
+    cell_weight : ndarray, shape (n_cells,)
+        Normalised attention score for each enemy cell in ``state.cell_pos``
+        (non-enemy cells are always ``0.0``).
+    """
+
+    food_weight: np.ndarray   # shape (n_food,), float32
+    cell_weight: np.ndarray   # shape (n_cells,), float32
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +106,13 @@ class Renderer:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def draw(self, state: GameState, camera: Camera, human_id: int) -> None:
+    def draw(
+        self,
+        state: GameState,
+        camera: Camera,
+        human_id: int,
+        attention: AttentionWeights | None = None,
+    ) -> None:
         """Render a full frame.
 
         Parameters
@@ -91,13 +123,17 @@ class Renderer:
             Current viewport.
         human_id : int
             Player slot of the human; their cells are drawn with a border.
+        attention : AttentionWeights, optional
+            If provided, draws a glow halo on food/enemy cells proportional
+            to their attention weight.  Computed once per simulation tick in
+            ``main.py`` and passed through unchanged each render frame.
         """
         self.screen.fill(_BG_COLOUR)
         self._draw_grid(camera)
-        self._draw_food(state, camera)
+        self._draw_food(state, camera, attention)
         self._draw_viruses(state, camera)
         self._draw_ejected(state, camera)
-        self._draw_cells(state, camera, human_id)
+        self._draw_cells(state, camera, human_id, attention)
 
     # ------------------------------------------------------------------
     # Grid
@@ -134,7 +170,12 @@ class Renderer:
     # Food
     # ------------------------------------------------------------------
 
-    def _draw_food(self, state: GameState, camera: Camera) -> None:
+    def _draw_food(
+        self,
+        state: GameState,
+        camera: Camera,
+        attention: AttentionWeights | None = None,
+    ) -> None:
         n = len(state.food_pos)
         if n == 0:
             return
@@ -142,7 +183,8 @@ class Renderer:
         food_r_world = 5.0   # food radius = sqrt(food_mass=25) = 5
         radii = np.full(n, food_r_world, dtype=np.float32)
         mask = camera.visible_mask(state.food_pos, radii)
-        visible_pos = state.food_pos[mask]
+        visible_indices = np.where(mask)[0]
+        visible_pos = state.food_pos[visible_indices]
 
         if len(visible_pos) == 0:
             return
@@ -150,10 +192,22 @@ class Renderer:
         screen_xy = camera.world_to_screen_arr(visible_pos)
         r_px = max(1, int(camera.world_radius_to_screen(food_r_world)))
 
-        for sx, sy in screen_xy:
-            pygame.draw.circle(
-                self.screen, _FOOD_COLOUR, (int(sx), int(sy)), r_px,
-            )
+        # Pre-extract attention weights for visible food (None → all zero)
+        food_w: np.ndarray | None = None
+        if attention is not None and len(attention.food_weight) == n:
+            food_w = attention.food_weight[visible_indices]
+
+        for k, (sx, sy) in enumerate(screen_xy):
+            ix, iy = int(sx), int(sy)
+
+            # Attention glow: drawn first so the food circle appears on top
+            if food_w is not None:
+                w = float(food_w[k])
+                if w > 0.05:
+                    glow_r = max(r_px + 1, int(r_px * (1.0 + 2.5 * w)))
+                    _draw_glow(self.screen, _FOOD_COLOUR, ix, iy, glow_r, int(180 * w))
+
+            pygame.draw.circle(self.screen, _FOOD_COLOUR, (ix, iy), r_px)
 
     # ------------------------------------------------------------------
     # Viruses
@@ -219,7 +273,11 @@ class Renderer:
     # ------------------------------------------------------------------
 
     def _draw_cells(
-        self, state: GameState, camera: Camera, human_id: int,
+        self,
+        state: GameState,
+        camera: Camera,
+        human_id: int,
+        attention: AttentionWeights | None = None,
     ) -> None:
         n = len(state.cell_pos)
         if n == 0:
@@ -229,14 +287,19 @@ class Renderer:
         owners = state.cell_owner
         radii_world = np.sqrt(mass)
 
-        mask = camera.visible_mask(state.cell_pos, radii_world)
-        if not mask.any():
+        vis_indices = np.where(camera.visible_mask(state.cell_pos, radii_world))[0]
+        if len(vis_indices) == 0:
             return
 
-        vis_pos = state.cell_pos[mask]
-        vis_mass = mass[mask]
-        vis_owners = owners[mask]
-        vis_rad_world = radii_world[mask]
+        vis_pos = state.cell_pos[vis_indices]
+        vis_mass = mass[vis_indices]
+        vis_owners = owners[vis_indices]
+        vis_rad_world = radii_world[vis_indices]
+
+        # Attention weights for visible cells (None → all zero)
+        cell_w: np.ndarray | None = None
+        if attention is not None and len(attention.cell_weight) == len(state.cell_pos):
+            cell_w = attention.cell_weight[vis_indices]
 
         screen_xy = camera.world_to_screen_arr(vis_pos)
 
@@ -248,6 +311,13 @@ class Renderer:
             r_px = max(2, int(camera.world_radius_to_screen(vis_rad_world[i])))
             pid = int(vis_owners[i])
             colour = _player_colour(pid)
+
+            # Attention glow on enemy cells (drawn before the cell fill)
+            if cell_w is not None and pid != human_id:
+                w = float(cell_w[i])
+                if w > 0.05:
+                    glow_r = max(r_px + 2, int(r_px * (1.0 + 1.5 * w)))
+                    _draw_glow(self.screen, colour, ox, oy, glow_r, int(160 * w))
 
             pygame.draw.circle(self.screen, colour, (ox, oy), r_px)
 
@@ -274,3 +344,31 @@ def _mass_label(mass: float) -> str:
     if mass >= 1_000:
         return f"{mass / 1_000:.1f}k"
     return str(int(mass))
+
+
+def _draw_glow(
+    surface: pygame.Surface,
+    colour: tuple[int, int, int],
+    cx: int,
+    cy: int,
+    radius: int,
+    alpha: int,
+) -> None:
+    """Draw a semi-transparent filled circle (glow halo) onto *surface*.
+
+    Parameters
+    ----------
+    surface : pygame.Surface
+        Target display surface.
+    colour : tuple[int, int, int]
+        RGB base colour of the glow.
+    cx, cy : int
+        Centre of the glow in screen pixels.
+    radius : int
+        Radius of the glow circle in pixels.
+    alpha : int
+        Opacity 0–255; higher = more visible.
+    """
+    glow_surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+    pygame.draw.circle(glow_surf, (*colour, max(0, min(255, alpha))), (radius, radius), radius)
+    surface.blit(glow_surf, (cx - radius, cy - radius))

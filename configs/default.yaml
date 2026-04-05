@@ -2,15 +2,16 @@
 # Run: python train.py --config configs/default.yaml
 
 world:
-  width: 4000.0           # real agar.io is 14142 — smaller world = denser food & agent encounters
-  height: 4000.0
-  target_food_count: 600  # keeps food density proportional to full-scale default (2000 @ 14142²)
-  target_virus_count: 4
+  width: 2000.0           # 2000×2000 — denser encounters; ~7 radii avg spacing at 32 agents
+  height: 2000.0
+  target_food_count: 200  # proportional density ≈ 150, bumped to keep ~6 food tokens per agent
+  target_virus_count: 2
+  max_players: 32         # must be >= n_agents; default WorldConfig cap is 16
 
 env:
-  n_envs: 4          # parallel worlds (was 3)
-  n_agents: 16       # RL-controlled agents per world (was 8); set to 0 to use random bots instead
-  max_ticks: 1000    # episode length before truncation (~40 s at 25 TPS; was 2000)
+  n_envs: 1          # single visible world
+  n_agents: 32       # 32 RL agents competing in that world (was 4 worlds × 16)
+  max_ticks: 1500    # episode length (~60 s at 25 TPS); long enough for mass-growth arcs
   survival_bonus: 0.01  # reward per tick for staying alive; 0.01 = food_mass/start_mass
 
 policy:
@@ -25,9 +26,9 @@ policy:
   gru_hidden: 128
 
 ppo:
-  n_steps: 512       # rollout steps per env (total batch = n_steps × n_envs = 1536)
-  n_epochs: 4        # gradient passes per rollout
-  batch_size: 256
+  n_steps: 2048      # rollout steps per env (total batch = n_steps × n_agents = 65536)
+  n_epochs: 8        # gradient passes per rollout (was 4)
+  batch_size: 2048   # minibatch size (was 256); bigger batches → better GPU utilisation
   clip_range: 0.2
   value_coef: 0.5
   entropy_coef: 0.01
@@ -44,3 +45,9 @@ train:
   video_ticks: 300       # ticks to simulate per training video
   checkpoint_dir: checkpoints/run_default
   seed: 0
+
+# Self-play opponent pool (uncomment to enable — only works when n_agents == 0)
+# selfplay:
+#   pool_size: 20           # max snapshots kept in the ring buffer
+#   update_interval: 50     # rollouts between pool snapshots
+#   selfplay_prob: 0.8      # fraction of rollouts using pool vs random walk

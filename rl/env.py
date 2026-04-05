@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import gymnasium as gym
@@ -143,29 +143,30 @@ def build_observation(
     threat_feat = np.zeros((K_THREAT, 3), dtype=np.float32)
     prey_feat = np.zeros((K_PREY, 3), dtype=np.float32)
     if len(enemy_pos) > 0:
-        # delta_log_mass > 0 → enemy larger (threat); <= 0 → enemy smaller (prey)
+        # Compute distances once; reuse for both threat and prey k-nearest searches.
+        dists_sq = np.sum((enemy_pos - centroid) ** 2, axis=1)
         delta_lm_all = np.log(enemy_mass / safe_own_mass + 1e-6) / 5.0
         is_threat = delta_lm_all > 0.0
 
-        t_pos = enemy_pos[is_threat]
-        t_mass = enemy_mass[is_threat]
-        if len(t_pos) > 0:
-            nn = _k_nearest_indices(centroid, t_pos, K_THREAT)
-            n = len(nn)
-            rel = np.clip((t_pos[nn] - centroid) / pos_scale, -10.0, 10.0)
-            dlm = np.clip(np.log(t_mass[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0)
-            threat_feat[:n, :2] = rel
-            threat_feat[:n, 2] = dlm
-
-        p_pos = enemy_pos[~is_threat]
-        p_mass = enemy_mass[~is_threat]
-        if len(p_pos) > 0:
-            nn = _k_nearest_indices(centroid, p_pos, K_PREY)
-            n = len(nn)
-            rel = np.clip((p_pos[nn] - centroid) / pos_scale, -10.0, 10.0)
-            dlm = np.clip(np.log(p_mass[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0)
-            prey_feat[:n, :2] = rel
-            prey_feat[:n, 2] = dlm
+        for feat, mask, k in (
+            (threat_feat, is_threat, K_THREAT),
+            (prey_feat, ~is_threat, K_PREY),
+        ):
+            ep = enemy_pos[mask]
+            em = enemy_mass[mask]
+            ed = dists_sq[mask]
+            if len(ep) == 0:
+                continue
+            n = min(k, len(ep))
+            nn = (
+                np.argpartition(ed, n - 1)[:n].astype(np.int32)
+                if n < len(ep)
+                else np.arange(len(ep), dtype=np.int32)
+            )
+            feat[:n, :2] = np.clip((ep[nn] - centroid) / pos_scale, -10.0, 10.0)
+            feat[:n, 2] = np.clip(
+                np.log(em[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0
+            )
 
     # ── Scalars ─────────────────────────────────────────────────────────────
     log_mass = float(
@@ -181,6 +182,141 @@ def build_observation(
         prey_feat.ravel(),
         np.array([log_mass, cells_frac], dtype=np.float32),
     ])
+
+
+def build_observation_batch(
+    state: GameState,
+    player_ids: list[int],
+    cfg: WorldConfig,
+    pos_scale: float,
+    out: np.ndarray | None = None,
+) -> np.ndarray:
+    """Build observation vectors for *B* agents from a single :class:`GameState`.
+
+    More efficient than calling :func:`build_observation` in a loop: shared
+    arrays (food positions, virus positions, cell arrays) are accessed once and
+    the output is written directly into a pre-allocated buffer, avoiding per-
+    agent ``np.zeros`` + ``np.concatenate`` allocations.
+
+    Parameters
+    ----------
+    state : GameState
+        Current world snapshot.
+    player_ids : list[int]
+        Agent IDs to build observations for, in order.
+    cfg : WorldConfig
+        Simulation configuration.
+    pos_scale : float
+        Position normalisation denominator (``max(width, height) / 2``).
+    out : ndarray, shape (B, OBS_DIM), float32, optional
+        Pre-allocated output buffer.  Allocated internally if not provided.
+
+    Returns
+    -------
+    ndarray, shape (len(player_ids), OBS_DIM), float32
+    """
+    B = len(player_ids)
+    if out is None:
+        out = np.zeros((B, OBS_DIM), dtype=np.float32)
+    else:
+        out[:] = 0.0
+
+    # Hoist shared arrays — accessed once, reused across all agents.
+    cell_owner = state.cell_owner
+    cell_pos = state.cell_pos
+    cell_mass = state.cell_mass
+    food_pos = state.food_pos
+    virus_pos = state.virus_pos
+    player_mass = state.player_mass
+    n_food = len(food_pos)
+    n_virus = len(virus_pos)
+
+    # Flat-vector segment boundaries (must match OBS_DIM layout above).
+    s_food = K_OWN * 3
+    s_virus = s_food + K_FOOD * 2
+    s_threat = s_virus + K_VIRUS * 2
+    s_prey = s_threat + K_THREAT * 3
+    s_scalar = s_prey + K_PREY * 3
+
+    for i, pid in enumerate(player_ids):
+        own_mask = cell_owner == pid
+        own_pos = cell_pos[own_mask]
+        own_mass_arr = cell_mass[own_mask]
+
+        if len(own_pos) > 0:
+            centroid = own_pos.mean(axis=0)
+        else:
+            centroid = np.array([cfg.width / 2.0, cfg.height / 2.0], dtype=np.float32)
+
+        # Own cells — write directly into pre-allocated output slice.
+        if len(own_pos) > 0:
+            order = np.argsort(own_mass_arr)[::-1][:K_OWN]
+            n = len(order)
+            rel = np.clip((own_pos[order] - centroid) / pos_scale, -10.0, 10.0)
+            lm = np.clip(
+                np.log(own_mass_arr[order] / cfg.start_mass + 1e-6) / 5.0, -10.0, 10.0
+            )
+            own_block = out[i, :s_food].reshape(K_OWN, 3)
+            own_block[:n, :2] = rel
+            own_block[:n, 2] = lm
+
+        # Food
+        if n_food > 0:
+            nn = _k_nearest_indices(centroid, food_pos, K_FOOD)
+            food_block = out[i, s_food:s_virus].reshape(K_FOOD, 2)
+            food_block[:len(nn)] = np.clip(
+                (food_pos[nn] - centroid) / pos_scale, -10.0, 10.0
+            )
+
+        # Viruses
+        if n_virus > 0:
+            nn = _k_nearest_indices(centroid, virus_pos, K_VIRUS)
+            virus_block = out[i, s_virus:s_threat].reshape(K_VIRUS, 2)
+            virus_block[:len(nn)] = np.clip(
+                (virus_pos[nn] - centroid) / pos_scale, -10.0, 10.0
+            )
+
+        # Threats & prey
+        total_mass = float(player_mass[pid])
+        safe_own_mass = max(total_mass, 1.0)
+        enemy_mask = (cell_owner != pid) & (cell_owner >= 0)
+        enemy_pos = cell_pos[enemy_mask]
+        enemy_mass_arr = cell_mass[enemy_mask]
+
+        if len(enemy_pos) > 0:
+            dists_sq = np.sum((enemy_pos - centroid) ** 2, axis=1)
+            delta_lm_all = np.log(enemy_mass_arr / safe_own_mass + 1e-6) / 5.0
+            is_threat = delta_lm_all > 0.0
+
+            for s_start, s_end, mask, k in (
+                (s_threat, s_prey, is_threat, K_THREAT),
+                (s_prey, s_scalar, ~is_threat, K_PREY),
+            ):
+                ep = enemy_pos[mask]
+                em = enemy_mass_arr[mask]
+                ed = dists_sq[mask]
+                if len(ep) == 0:
+                    continue
+                n = min(k, len(ep))
+                nn = (
+                    np.argpartition(ed, n - 1)[:n].astype(np.int32)
+                    if n < len(ep)
+                    else np.arange(len(ep), dtype=np.int32)
+                )
+                block = out[i, s_start:s_end].reshape(k, 3)
+                block[:n, :2] = np.clip((ep[nn] - centroid) / pos_scale, -10.0, 10.0)
+                block[:n, 2] = np.clip(
+                    np.log(em[nn] / safe_own_mass + 1e-6) / 5.0, -10.0, 10.0
+                )
+
+        # Scalars
+        log_mass = float(
+            np.clip(np.log(total_mass / cfg.start_mass + 1e-6) / 5.0, -10.0, 10.0)
+        )
+        out[i, s_scalar] = log_mass
+        out[i, s_scalar + 1] = float(own_mask.sum()) / cfg.max_cells_per_player
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +364,11 @@ class AgarEnv(gym.Env):
     survival_bonus : float
         Added to reward each tick the agent survives.  Calibrate to
         ``food_mass / start_mass`` (default 0.01) to match food-eating scale.
+    bot_policy : Callable[[np.ndarray], np.ndarray] | None, optional
+        If provided, each bot's action is produced by calling
+        ``bot_policy(obs)`` instead of the random-walk heuristic.
+        Swap it between rollouts via :meth:`set_bot_policy` without
+        reconstructing the environment.
     """
 
     metadata: dict[str, Any] = {"render_modes": []}
@@ -239,6 +380,7 @@ class AgarEnv(gym.Env):
         max_ticks: int = 2000,
         reward_scale: float | None = None,
         survival_bonus: float = 0.0,
+        bot_policy: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> None:
         super().__init__()
         self.config = config or WorldConfig()
@@ -254,6 +396,7 @@ class AgarEnv(gym.Env):
         self._bot_ids: list[int] = list(range(1, 1 + self.n_bots))
         self._tick: int = 0
         self._pos_scale: float = max(cfg.width, cfg.height) / 2.0
+        self._bot_policy: Callable[[np.ndarray], np.ndarray] | None = bot_policy
 
         obs_bound = np.full(OBS_DIM, 10.0, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_bound, obs_bound, dtype=np.float32)
@@ -326,14 +469,27 @@ class AgarEnv(gym.Env):
         world_actions[self._agent_id, 2] = 1.0 if action[2] > 0.0 else 0.0
         world_actions[self._agent_id, 3] = 1.0 if action[3] > 0.0 else 0.0
 
-        # Bots: random direction each tick
-        rng = self._world._rng
-        for bid in self._bot_ids:
-            if bid in self._world._active_players:
-                angle = float(rng.uniform(0.0, 2.0 * np.pi))
-                bc = self._centroid(bid)
-                world_actions[bid, 0] = bc[0] + np.cos(angle) * large_scale
-                world_actions[bid, 1] = bc[1] + np.sin(angle) * large_scale
+        # Bots: policy-driven or random direction each tick
+        if self._bot_policy is not None:
+            # Fetch state once so all bots can build observations from the same snapshot.
+            bot_state = self._world.get_state()
+            for bid in self._bot_ids:
+                if bid in self._world._active_players:
+                    obs_b = build_observation(bot_state, bid, self.config, self._pos_scale)
+                    act_b = self._bot_policy(obs_b)
+                    bc = self._centroid(bid)
+                    world_actions[bid, 0] = bc[0] + float(act_b[0]) * large_scale
+                    world_actions[bid, 1] = bc[1] + float(act_b[1]) * large_scale
+                    world_actions[bid, 2] = 1.0 if act_b[2] > 0.0 else 0.0
+                    world_actions[bid, 3] = 1.0 if act_b[3] > 0.0 else 0.0
+        else:
+            rng = self._world._rng
+            for bid in self._bot_ids:
+                if bid in self._world._active_players:
+                    angle = float(rng.uniform(0.0, 2.0 * np.pi))
+                    bc = self._centroid(bid)
+                    world_actions[bid, 0] = bc[0] + np.cos(angle) * large_scale
+                    world_actions[bid, 1] = bc[1] + np.sin(angle) * large_scale
 
         raw_rewards, raw_dones, info = self._world.step(world_actions)
 
@@ -352,6 +508,19 @@ class AgarEnv(gym.Env):
         state = self._world.get_state()
         obs = build_observation(state, self._agent_id, self.config, self._pos_scale)
         return obs, reward, terminated, truncated, info
+
+    def set_bot_policy(
+        self,
+        policy: Callable[[np.ndarray], np.ndarray] | None,
+    ) -> None:
+        """Replace the bot policy without reconstructing the environment.
+
+        Parameters
+        ----------
+        policy : Callable[[np.ndarray], np.ndarray] | None
+            New bot policy, or ``None`` to revert to the random-walk baseline.
+        """
+        self._bot_policy = policy
 
     # ------------------------------------------------------------------
     # Internal helpers
